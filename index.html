@@ -141,11 +141,22 @@ function urlCourse() {
   return (p && COURSES.find(c=>c.id===p)) ? p : null;
 }
 const PASS_KEY='attend_pass', DEFAULT_PASS='changeme';
-const SHEETS_KEY='attend_sheets_url';
+const SHEETS_KEY_PREFIX='attend_sheets_url_'; // per-course: attend_sheets_url_<courseId>
 function getPass() { return localStorage.getItem(PASS_KEY)||DEFAULT_PASS; }
 function setPass(p) { localStorage.setItem(PASS_KEY,p); }
-function getSheetsUrl() { return localStorage.getItem(SHEETS_KEY)||''; }
-function setSheetsUrl(u) { localStorage.setItem(SHEETS_KEY,u); }
+function getSheetsUrl(id) { return localStorage.getItem(SHEETS_KEY_PREFIX+id)||''; }
+function setSheetsUrl(id,u) { if(u){localStorage.setItem(SHEETS_KEY_PREFIX+id,u);} else {localStorage.removeItem(SHEETS_KEY_PREFIX+id);} }
+// One-time migration: if any course has no per-course URL but the legacy global
+// URL exists, copy it to each course so an existing instructor keeps working.
+(function migrateLegacySheetsUrl(){
+  var legacy = localStorage.getItem('attend_sheets_url');
+  if(!legacy) return;
+  (COURSES||[]).forEach(function(c){
+    if(!localStorage.getItem(SHEETS_KEY_PREFIX+c.id)){
+      localStorage.setItem(SHEETS_KEY_PREFIX+c.id, legacy);
+    }
+  });
+})();
 function cfgKey(id) { return 'attend_cfg_'+id; }
 function recsKey(id) { return 'attend_recs_'+id; }
 function randCode() { const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; return Array.from({length:4},()=>c[Math.floor(Math.random()*c.length)]).join(''); }
@@ -170,7 +181,9 @@ const st = {
   studentCourse: fixedCourse || COURSES[0].id,
   instructorCourse: COURSES[0].id,
   tab: 'setup',
-  sheetsUrl: getSheetsUrl(), newSheetsUrl: getSheetsUrl(),
+  // sheetsUrlDraft: per-course in-progress edits to the URL field, keyed by course id.
+  // Actual saved value lives in localStorage via getSheetsUrl(id)/setSheetsUrl(id,url).
+  sheetsUrlDraft: {},
   newPass1: '', newPass2: '', passMsg: ''
 };
 function fmt(n,d=5) { return n!=null ? Number(n).toFixed(d) : '--'; }
@@ -195,9 +208,10 @@ function requestGeo() {
     {enableHighAccuracy:true,timeout:10000,maximumAge:0}
   );
 }
-async function postToSheets(rec) {
-  if(!st.sheetsUrl) return {status:'none'};
-  try { await fetch(st.sheetsUrl,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify(rec)}); return {status:'ok'}; }
+async function postToSheets(rec, courseId) {
+  var url = getSheetsUrl(courseId);
+  if(!url) return {status:'none'};
+  try { await fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify(rec)}); return {status:'ok'}; }
   catch(e) { return {status:'fail'}; }
 }
 let submitted=null, showSuccess=false;
@@ -211,7 +225,7 @@ async function handleSubmit(name,code,courseId) {
     accuracy:st.geo?Math.round(st.geo.accuracy):null,syncStatus:'pending'};
   c.records.push(rec); saveRecs(courseId,c.records);
   submitted=rec; showSuccess=true; render();
-  const sr=await postToSheets({...rec,course:course.label});
+  const sr=await postToSheets({...rec,course:course.label}, courseId);
   rec.syncStatus=sr.status; saveRecs(courseId,c.records);
   if(showSuccess&&submitted&&submitted.id===rec.id) render();
 }
@@ -312,7 +326,7 @@ function studentHTML() {
   </div>
   ${st.geoStatus==='error'?`<p style="font-size:12px;color:var(--red-text);margin-top:6px">${st.geoError||'Permission denied'} — tap Retry and allow location access, or check your browser settings.</p>`:''}
 </div>
-${st.sheetsUrl?`<p style="font-size:12px;color:var(--text3);display:flex;align-items:center;gap:5px;margin-bottom:8px"><span class="dot" style="background:#3B6D11"></span>Responses logged to Google Sheets</p>`:''}
+${getSheetsUrl(id)?`<p style="font-size:12px;color:var(--text3);display:flex;align-items:center;gap:5px;margin-bottom:8px"><span class="dot" style="background:#3B6D11"></span>Responses logged to Google Sheets</p>`:''}
 <button class="btn-p" id="submitBtn" style="background:${course.color}">Submit attendance</button>`;
 }
 function instructorHTML() {
@@ -378,39 +392,55 @@ function setupTab(id) {
 </div>`;
 }
 function sheetsTab() {
-  const connected=st.sheetsUrl.length>10;
+  const id = st.instructorCourse;
+  const course = getCourse(id);
+  const saved = getSheetsUrl(id);
+  const draftVal = (id in st.sheetsUrlDraft) ? st.sheetsUrlDraft[id] : saved;
+  const connected = saved.length > 10;
+  // Connection summary across all courses
+  const summary = COURSES.map(c=>{
+    const u=getSheetsUrl(c.id);
+    const dot = u ? '#3B6D11' : '#888780';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">
+      <span class="dot" style="background:${dot}"></span>
+      <span style="font-weight:600;color:${c.color};min-width:92px">${c.label}</span>
+      <span style="color:var(--text2);font-size:12px;word-break:break-all">${u?u.slice(0,54)+(u.length>54?'…':''):'Not configured'}</span>
+    </div>`;
+  }).join('');
   return `
 <div class="card">
-  <div class="sec">How it works</div>
-  <p style="font-size:13px;color:var(--text2);margin-bottom:10px">One Apps Script and one Google Sheet handles all three courses. Each course gets its own tab — created automatically on the first submission from that class.</p>
-  <div style="display:flex;gap:6px;flex-wrap:wrap">${COURSES.map(c=>`<span style="background:${c.bg};color:${c.txt};font-size:11px;font-weight:600;padding:3px 10px;border-radius:100px">${c.label} tab</span>`).join('')}</div>
+  <div class="sec">Per-course Google Sheets</div>
+  <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Each course has its own Apps Script deployment URL. You can point all three at the same sheet (one sheet, three tabs), or give each class its own sheet — useful if you share attendance with different TAs or departments.</p>
+  ${summary}
 </div>
 <div class="card">
-  <div class="sec">Setup instructions</div>
-  <div class="step-row"><span class="step-num">1</span><span>Go to <strong>script.google.com</strong> and create a new project</span></div>
-  <div class="step-row"><span class="step-num">2</span><span>Paste the Apps Script code below and save (Ctrl+S)</span></div>
+  <div class="sec">Setup instructions (per course)</div>
+  <div class="step-row"><span class="step-num">1</span><span>Open or create the Google Sheet you want to use for <strong>${course.label}</strong></span></div>
+  <div class="step-row"><span class="step-num">2</span><span>Extensions → <strong>Apps Script</strong>, paste the code below, Save (Ctrl+S)</span></div>
   <div class="step-row"><span class="step-num">3</span><span>Click <strong>Deploy → New deployment → Web app</strong></span></div>
-  <div class="step-row"><span class="step-num">4</span><span>Set "Who has access" to <strong>Anyone</strong>, deploy and copy the URL</span></div>
-  <div class="step-row"><span class="step-num">5</span><span>Open a Google Sheet, paste the URL below and click Save</span></div>
+  <div class="step-row"><span class="step-num">4</span><span>Set "Who has access" to <strong>Anyone</strong>, deploy, copy the URL</span></div>
+  <div class="step-row"><span class="step-num">5</span><span>Paste the URL below, click Save, then Test connection</span></div>
+  <div class="step-row"><span class="step-num">6</span><span>Switch to another course pill above and repeat (or paste the same URL to share one sheet)</span></div>
 </div>
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-    <div class="sec" style="margin-bottom:0">Apps Script code</div>
+    <div class="sec" style="margin-bottom:0">Apps Script code (same for every course)</div>
     <button class="btn-sm" id="copyScript">Copy</button>
   </div>
   <pre>${APPS_SCRIPT_CODE.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
 </div>
-<div class="card">
-  <div class="sec">Deployment URL</div>
-  ${connected?`<div class="info-box">Connected — all three courses log to your sheet.</div>`:`<div class="warn-box">No URL set — Google Sheets logging is off.</div>`}
-  <div class="field"><label>Apps Script deployment URL</label>
-    <input type="url" id="sheetsUrlI" placeholder="https://script.google.com/macros/s/..." value="${st.sheetsUrl}"/>
+<div class="card" style="border-top:3px solid ${course.color}">
+  <div class="sec">Deployment URL — ${course.label}</div>
+  ${connected?`<div class="info-box">Connected — ${course.label} submissions log to this URL.</div>`:`<div class="warn-box">No URL set for ${course.label} — its submissions won't sync to Sheets yet.</div>`}
+  <div class="field"><label>Apps Script deployment URL for ${course.label}</label>
+    <input type="url" id="sheetsUrlI" placeholder="https://script.google.com/macros/s/..." value="${draftVal}"/>
   </div>
   <div class="row2">
-    <button class="btn-p" id="saveUrl">Save URL</button>
+    <button class="btn-p" id="saveUrl" style="background:${course.color}">Save URL for ${course.label}</button>
     <button class="btn-o" id="testUrl" ${!connected?'disabled':''}>Test connection</button>
   </div>
-  ${connected?`<p style="font-size:11px;color:var(--text3);margin-top:6px">After testing, open your sheet to confirm three test entries appear on each course tab.</p>`:''}
+  ${connected?`<p style="font-size:11px;color:var(--text3);margin-top:6px">After testing, open the sheet and confirm a TEST ENTRY row appeared on the <strong>${course.label}</strong> tab.</p>`:''}
+  ${saved?`<button class="btn-sm" id="clearUrl" style="color:var(--red-text);border-color:var(--red-text);margin-top:8px">Remove URL for ${course.label}</button>`:''}
 </div>`;
 }
 function recordsTab(id) {
@@ -524,17 +554,30 @@ function attachE() {
     setPass(p1);st.passMsg='Password updated successfully.';st.newPass1='';st.newPass2='';render();
   });
   on('copyScript','click',()=>{navigator.clipboard?.writeText(APPS_SCRIPT_CODE).then(()=>{const b=document.getElementById('copyScript');if(b){b.textContent='Copied!';setTimeout(()=>b.textContent='Copy',2200);}}).catch(()=>alert('Select and copy the code manually.'));});
-  on('saveUrl','click',()=>{const u=document.getElementById('sheetsUrlI')?.value.trim();st.sheetsUrl=u||'';setSheetsUrl(st.sheetsUrl);render();});
+  on('saveUrl','click',()=>{
+    const u=document.getElementById('sheetsUrlI')?.value.trim()||'';
+    setSheetsUrl(iid,u);
+    delete st.sheetsUrlDraft[iid];
+    render();
+  });
+  on('clearUrl','click',()=>{
+    if(confirm(`Remove the Google Sheets URL for ${getCourse(iid).label}? Submissions for this course will stop syncing until you set a new one.`)){
+      setSheetsUrl(iid,'');
+      delete st.sheetsUrlDraft[iid];
+      render();
+    }
+  });
   on('testUrl','click',async()=>{
     const b=document.getElementById('testUrl');if(b){b.textContent='Sending…';b.disabled=true;}
-    await postToSheets({name:'TEST ENTRY',courseLabel:'Test',course:'Test',date:'Test',time:'Test',code:'TEST',codeOk:true,geoOk:null,lat:'',lng:'',accuracy:''});
+    const cLabel = getCourse(iid).label;
+    await postToSheets({name:'TEST ENTRY',courseLabel:cLabel,course:cLabel,date:'Test',time:'Test',code:'TEST',codeOk:true,geoOk:null,lat:'',lng:'',accuracy:''}, iid);
     if(b){b.textContent='Sent! Check your sheet';setTimeout(()=>{b.textContent='Test connection';b.disabled=false;},3000);}
   });
   on('exportCSV','click',()=>exportCSV(iid));
   on('clearRecs','click',()=>{if(confirm(`Clear all local records for ${getCourse(iid).label}?`)){c.records=[];saveRecs(iid,c.records);render();}});
   const fi=[['newCode','newCodeInput'],['latI','newLatInput'],['lngI','newLngInput'],['radI','newRadiusInput']];
   fi.forEach(([id,key])=>{const el=document.getElementById(id);if(el)el.addEventListener('input',e=>{c[key]=e.target.value;});});
-  const su=document.getElementById('sheetsUrlI');if(su)su.addEventListener('input',e=>st.newSheetsUrl=e.target.value);
+  const su=document.getElementById('sheetsUrlI');if(su)su.addEventListener('input',e=>{st.sheetsUrlDraft[iid]=e.target.value;});
   const np1=document.getElementById('newPass1');if(np1)np1.addEventListener('input',e=>st.newPass1=e.target.value);
   const np2=document.getElementById('newPass2');if(np2)np2.addEventListener('input',e=>st.newPass2=e.target.value);
   // Auto-capture location as soon as the student view first renders in 'idle' state.
