@@ -110,6 +110,25 @@ hr { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
 const APPS_SCRIPT_CODE = `function doPost(e) {
   try {
     var data = JSON.parse(e.postData.contents);
+    var action = data.action || 'submit';
+    var props = PropertiesService.getScriptProperties();
+    var courseId = data.courseId || 'default';
+    var codeKey = 'code_' + courseId;
+
+    if (action === 'publishCode') {
+      props.setProperty(codeKey, (data.code || '').toUpperCase());
+      props.setProperty(codeKey + '_ts', String(Date.now()));
+      return ContentService.createTextOutput(JSON.stringify({ok:true, action:'publishCode'}))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    if (action === 'clearCode') {
+      props.deleteProperty(codeKey);
+      props.deleteProperty(codeKey + '_ts');
+      return ContentService.createTextOutput(JSON.stringify({ok:true, action:'clearCode'}))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // default action: submit an attendance record
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheetName = data.course || 'Attendance';
     var sheet = ss.getSheetByName(sheetName);
@@ -119,12 +138,41 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
         'Code Check','Location Check','Latitude','Longitude','GPS Accuracy (m)']);
       sheet.getRange(1,1,1,10).setFontWeight('bold').setBackground('#E8F0FE');
     }
+    var correctCode = (props.getProperty(codeKey) || '').toUpperCase();
+    var submittedCode = (data.code || '').toUpperCase();
+    // Server-side verification is authoritative when a code has been published.
+    // If no code is published server-side, fall back to the client's codeOk flag
+    // so legacy deployments keep working.
+    var codeOk;
+    if (correctCode) {
+      codeOk = submittedCode === correctCode;
+    } else {
+      codeOk = Boolean(data.codeOk);
+    }
     sheet.appendRow([data.date, data.time, data.name, data.course, data.code,
-      data.codeOk ? 'PASS' : 'FAIL',
+      codeOk ? 'PASS' : 'FAIL',
       data.geoOk === true ? 'PASS' : data.geoOk === false ? 'FAIL' : 'N/A',
       data.lat || '', data.lng || '', data.accuracy || '']);
-    return ContentService.createTextOutput(JSON.stringify({ok:true}))
+    return ContentService.createTextOutput(JSON.stringify({
+      ok: true,
+      codeOk: codeOk,
+      codeSource: correctCode ? 'server' : 'client'
+    })).setMimeType(ContentService.MimeType.JSON);
+  } catch(err) {
+    return ContentService.createTextOutput(JSON.stringify({ok:false,error:err.message}))
       .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet(e) {
+  try {
+    var courseId = (e && e.parameter && e.parameter.courseId) || 'default';
+    var props = PropertiesService.getScriptProperties();
+    var code = props.getProperty('code_' + courseId) || '';
+    var ts = props.getProperty('code_' + courseId + '_ts') || '';
+    return ContentService.createTextOutput(JSON.stringify({
+      ok: true, code: code, courseId: courseId, publishedAt: ts
+    })).setMimeType(ContentService.MimeType.JSON);
   } catch(err) {
     return ContentService.createTextOutput(JSON.stringify({ok:false,error:err.message}))
       .setMimeType(ContentService.MimeType.JSON);
@@ -184,6 +232,11 @@ const st = {
   // sheetsUrlDraft: per-course in-progress edits to the URL field, keyed by course id.
   // Actual saved value lives in localStorage via getSheetsUrl(id)/setSheetsUrl(id,url).
   sheetsUrlDraft: {},
+  // codePublishStatus[courseId] = 'idle'|'publishing'|'ok'|'fail'|'none'
+  // 'none' means this course has no Sheets URL configured so server publish is a no-op.
+  codePublishStatus: {},
+  // codePublishedAt[courseId] = Date.now() of last successful publish (number)
+  codePublishedAt: {},
   newPass1: '', newPass2: '', passMsg: ''
 };
 function fmt(n,d=5) { return n!=null ? Number(n).toFixed(d) : '--'; }
@@ -211,14 +264,74 @@ function requestGeo() {
 async function postToSheets(rec, courseId) {
   var url = getSheetsUrl(courseId);
   if(!url) return {status:'none'};
-  try { await fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify(rec)}); return {status:'ok'}; }
-  catch(e) { return {status:'fail'}; }
+  try {
+    // text/plain avoids a CORS preflight, and Apps Script /exec returns
+    // Access-Control-Allow-Origin:* so we CAN read the response JSON.
+    const res = await fetch(url, {
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify(rec),
+      redirect:'follow'
+    });
+    let body = null;
+    try { body = await res.json(); } catch(_) {}
+    return {status:'ok', body: body};
+  } catch(e) {
+    return {status:'fail', error: e && e.message};
+  }
+}
+async function publishCodeToServer(courseId, code) {
+  const url = getSheetsUrl(courseId);
+  if(!url) return {status:'none'};
+  try {
+    const res = await fetch(url, {
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({action:'publishCode', courseId: courseId, code: code}),
+      redirect:'follow'
+    });
+    let body = null;
+    try { body = await res.json(); } catch(_) {}
+    if(body && body.ok) return {status:'ok'};
+    return {status:'fail', error: body && body.error};
+  } catch(e) {
+    return {status:'fail', error: e && e.message};
+  }
+}
+// Orchestrates publish: renders 'publishing' state immediately, fires publish,
+// stores final status so the badge updates. Called after Apply / Generate.
+async function publishCurrentCode(courseId) {
+  const c = cd(courseId);
+  const hasUrl = Boolean(getSheetsUrl(courseId));
+  if (!hasUrl) {
+    st.codePublishStatus[courseId] = 'none';
+    render();
+    return;
+  }
+  st.codePublishStatus[courseId] = 'publishing';
+  render();
+  const result = await publishCodeToServer(courseId, c.sessionCode);
+  if (result.status === 'ok') {
+    st.codePublishStatus[courseId] = 'ok';
+    st.codePublishedAt[courseId] = Date.now();
+  } else if (result.status === 'none') {
+    st.codePublishStatus[courseId] = 'none';
+  } else {
+    st.codePublishStatus[courseId] = 'fail';
+  }
+  render();
 }
 let submitted=null, showSuccess=false;
 async function handleSubmit(name,code,courseId) {
   const now=new Date(); const gv=geoVerify(courseId); const c=cd(courseId); const course=getCourse(courseId);
-  const rec={id:Date.now(),name,courseId,courseLabel:course.label,code:code.trim().toUpperCase(),
-    codeOk:code.trim().toUpperCase()===c.sessionCode.toUpperCase(),
+  const submittedCode = code.trim().toUpperCase();
+  // Optimistic client-side verdict - only used if server never returns one
+  // (e.g. no Sheets URL configured, or fetch fails). Server verdict is
+  // authoritative for any deployment with a live Apps Script endpoint.
+  const localCodeOk = submittedCode === c.sessionCode.toUpperCase();
+  const rec={id:Date.now(),name,courseId,courseLabel:course.label,code:submittedCode,
+    codeOk: localCodeOk,
+    codeVerifiedBy: 'local-pending',
     time:now.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),
     date:now.toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'}),
     geoOk:gv.ok,lat:st.geo?st.geo.latitude:null,lng:st.geo?st.geo.longitude:null,
@@ -226,7 +339,16 @@ async function handleSubmit(name,code,courseId) {
   c.records.push(rec); saveRecs(courseId,c.records);
   submitted=rec; showSuccess=true; render();
   const sr=await postToSheets({...rec,course:course.label}, courseId);
-  rec.syncStatus=sr.status; saveRecs(courseId,c.records);
+  rec.syncStatus=sr.status;
+  if (sr.status === 'ok' && sr.body && typeof sr.body.codeOk === 'boolean') {
+    rec.codeOk = sr.body.codeOk;
+    rec.codeVerifiedBy = sr.body.codeSource === 'server' ? 'server' : 'client';
+  } else if (sr.status === 'none') {
+    rec.codeVerifiedBy = 'local-no-endpoint';
+  } else if (sr.status === 'fail') {
+    rec.codeVerifiedBy = 'local-network-fail';
+  }
+  saveRecs(courseId,c.records);
   if(showSuccess&&submitted&&submitted.id===rec.id) render();
 }
 function exportCSV(courseId) {
@@ -348,18 +470,42 @@ function instructorHTML() {
 </div>
 ${st.tab==='setup'?setupTab(id):st.tab==='sheets'?sheetsTab():recordsTab(id)}`;
 }
+function publishBadgeHTML(id) {
+  const hasUrl = Boolean(getSheetsUrl(id));
+  const status = st.codePublishStatus[id] || (hasUrl ? 'idle' : 'none');
+  const ts = st.codePublishedAt[id];
+  let bg, fg, icon, text;
+  if (status === 'publishing') {
+    bg = '#FFF3D1'; fg = '#6B4E00'; icon = '…'; text = 'Publishing code to server…';
+  } else if (status === 'ok') {
+    bg = '#E1F5EE'; fg = '#085041'; icon = '✓';
+    const when = ts ? new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+    text = 'Published to server' + (when ? ' at ' + when : '');
+  } else if (status === 'fail') {
+    bg = '#FBE4E4'; fg = '#8C1A1A'; icon = '!'; text = 'Publish failed — students may fail verification. Check your Sheets URL and try Apply again.';
+  } else if (status === 'none') {
+    bg = '#F3F2EE'; fg = '#555';   icon = 'i'; text = 'Not published to server — add a Google Sheets URL on the next tab to enable cross-device verification.';
+  } else {
+    bg = '#F3F2EE'; fg = '#555';   icon = 'i'; text = 'Apply or Generate to publish this code to your class server.';
+  }
+  return `<div style="display:flex;align-items:center;gap:8px;background:${bg};color:${fg};padding:8px 11px;border-radius:10px;font-size:12px;margin-bottom:14px">
+    <span style="display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;border-radius:100px;background:${fg};color:${bg};font-weight:700;font-size:11px;flex-shrink:0">${icon}</span>
+    <span style="line-height:1.35">${text}</span>
+  </div>`;
+}
 function setupTab(id) {
   const c=cd(id); const course=getCourse(id); const base=window.location.href.split('?')[0];
   return `
 <div class="card">
   <div class="sec">Session code — ${course.label}</div>
   <p style="font-size:13px;color:var(--text2);margin-bottom:12px">Display on your projector. Change it each class session to prevent code sharing.</p>
-  <div style="text-align:center;margin-bottom:14px"><div class="code-disp" style="color:${course.color}">${c.sessionCode}</div></div>
+  <div style="text-align:center;margin-bottom:10px"><div class="code-disp" style="color:${course.color}">${c.sessionCode}</div></div>
+  ${publishBadgeHTML(id)}
   <div class="row2" style="margin-bottom:8px">
     <div><label>Set new code</label><input type="text" class="mono" id="newCode" maxlength="6" placeholder="e.g. B3K9" value="${c.newCodeInput}"/></div>
-    <div style="display:flex;align-items:flex-end"><button class="btn-o" id="applyCode" style="width:100%">Apply</button></div>
+    <div style="display:flex;align-items:flex-end"><button class="btn-o" id="applyCode" style="width:100%">Apply &amp; publish</button></div>
   </div>
-  <button class="btn-sm" id="randCode">Generate random code</button>
+  <button class="btn-sm" id="randCode">Generate &amp; publish random code</button>
 </div>
 <div class="card">
   <div class="sec">Classroom location — ${course.label}</div>
@@ -532,8 +678,16 @@ function attachE() {
     if(!co){alert('Please enter the session code.');return;}
     handleSubmit(n,co,st.studentCourse);
   });
-  on('applyCode','click',()=>{const v=document.getElementById('newCode')?.value.trim().toUpperCase();if(v&&v.length>=3){c.sessionCode=v;saveCfg(iid,c);render();}else alert('Enter at least 3 characters.');});
-  on('randCode','click',()=>{c.sessionCode=randCode();saveCfg(iid,c);render();});
+  on('applyCode','click',()=>{
+    const v=document.getElementById('newCode')?.value.trim().toUpperCase();
+    if(!(v&&v.length>=3)){alert('Enter at least 3 characters.');return;}
+    c.sessionCode=v;c.newCodeInput='';saveCfg(iid,c);
+    publishCurrentCode(iid);
+  });
+  on('randCode','click',()=>{
+    c.sessionCode=randCode();saveCfg(iid,c);
+    publishCurrentCode(iid);
+  });
   on('useMyLoc','click',()=>{
     if(!navigator.geolocation){alert('Geolocation not supported.');return;}
     navigator.geolocation.getCurrentPosition(p=>{c.classroomLat=p.coords.latitude;c.classroomLng=p.coords.longitude;c.classroomSet=true;c.newLatInput=p.coords.latitude.toFixed(5);c.newLngInput=p.coords.longitude.toFixed(5);saveCfg(iid,c);render();},e=>alert('Could not get location: '+e.message),{enableHighAccuracy:true});
@@ -556,14 +710,21 @@ function attachE() {
   on('copyScript','click',()=>{navigator.clipboard?.writeText(APPS_SCRIPT_CODE).then(()=>{const b=document.getElementById('copyScript');if(b){b.textContent='Copied!';setTimeout(()=>b.textContent='Copy',2200);}}).catch(()=>alert('Select and copy the code manually.'));});
   on('saveUrl','click',()=>{
     const u=document.getElementById('sheetsUrlI')?.value.trim()||'';
+    const wasEmpty = !getSheetsUrl(iid);
     setSheetsUrl(iid,u);
     delete st.sheetsUrlDraft[iid];
     render();
+    // If this is the first time a URL is saved for this course, auto-publish
+    // the current session code so the server verification is immediately live.
+    if (u && wasEmpty) { publishCurrentCode(iid); }
   });
   on('clearUrl','click',()=>{
     if(confirm(`Remove the Google Sheets URL for ${getCourse(iid).label}? Submissions for this course will stop syncing until you set a new one.`)){
       setSheetsUrl(iid,'');
       delete st.sheetsUrlDraft[iid];
+      // Server no longer reachable — reset publish status so the Setup tab
+      // badge reflects the disconnected state.
+      st.codePublishStatus[iid] = 'none';
       render();
     }
   });
