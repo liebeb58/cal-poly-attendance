@@ -368,28 +368,21 @@ function render() {
   app.innerHTML=instructorHTML();attachE();
 }
 function pickHTML() {
-  const base=window.location.href.split('?')[0];
+  // Gateway view shown only when someone opens the bare URL with no
+  // ?course=XXXX query param. Students must come in via their Canvas page,
+  // which always carries the right course id — so this view never offers a
+  // course list. Only an instructor-login entry point is exposed here.
   return `
 <div style="text-align:center;padding:2rem 0 1.25rem">
   <div class="title">Attendance check-in</div>
-  <div class="subtitle" style="margin-top:4px">Select your course</div>
-</div>
-<div class="course-picker-grid">
-  ${COURSES.map(c=>`<div class="course-card" data-pick="${c.id}" style="border-top:3px solid ${c.color}">
-    <div style="font-size:18px;font-weight:700;color:${c.color};margin-bottom:4px">${c.label}</div>
-    <div style="font-size:12px;color:var(--text3)">Tap to check in</div>
-  </div>`).join('')}
+  <div class="subtitle" style="margin-top:4px">Please open this from your course's Canvas page</div>
 </div>
 <div class="card">
-  <div class="sec">Per-class direct links</div>
-  <p style="font-size:13px;color:var(--text2);margin-bottom:12px">Share each link with the corresponding class to skip this picker.</p>
-  ${COURSES.map(c=>`<div style="margin-bottom:10px">
-    <div style="font-size:12px;font-weight:600;color:${c.color};margin-bottom:3px">${c.label}</div>
-    <div class="url-box">${base}?course=${c.id}</div>
-  </div>`).join('')}
+  <p style="font-size:14px;color:var(--text2);margin-bottom:10px"><strong>Students:</strong> this page is not the check-in form. Open the Attendance Check-In link inside your Canvas course — that link loads the correct form for your class.</p>
+  <p style="font-size:13px;color:var(--text3)">If you can't find it, contact your instructor.</p>
 </div>
 <div style="text-align:center;margin-top:.5rem">
-  <button class="btn-sm" id="toInstructor">Instructor panel</button>
+  <button class="btn-sm" id="toInstructor">Instructor login</button>
 </div>`;
 }
 function loginHTML() {
@@ -427,7 +420,6 @@ function studentHTML() {
     <div class="subtitle">${today}</div>
   </div>
   <div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
-    ${!fixedCourse?`<button class="btn-sm" id="backToPick">All courses</button>`:''}
     <button class="btn-sm" id="toInstructor">Instructor</button>
   </div>
 </div>
@@ -653,7 +645,6 @@ function attachE() {
   const on=(id,ev,fn)=>{const e=document.getElementById(id);if(e)e.addEventListener(ev,fn);};
   const iid=st.instructorCourse; const c=cd(iid);
   on('toInstructor','click',()=>{st.view='instructor';st.loginError=false;render();});
-  on('backToPick','click',()=>{st.view='pick';render();});
   on('backFromLogin','click',()=>{st.view=fixedCourse?'student':'pick';render();});
   on('toStudent','click',()=>{st.view=fixedCourse?'student':'pick';render();});
   on('logoutBtn','click',()=>{st.instructorAuthed=false;st.view=fixedCourse?'student':'pick';render();});
@@ -664,7 +655,9 @@ function attachE() {
   });
   const lp=document.getElementById('loginPass');
   if(lp)lp.addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('loginBtn')?.click();});
-  document.querySelectorAll('[data-pick]').forEach(el=>el.addEventListener('click',()=>{st.studentCourse=el.dataset.pick;st.view='student';render();}));
+  // [data-pick] handlers removed intentionally: the gateway view no longer
+  // offers a student-facing course picker. Students must arrive via their
+  // Canvas page's ?course=XXXX link.
   document.querySelectorAll('[data-ipick]').forEach(el=>el.addEventListener('click',()=>{st.instructorCourse=el.dataset.ipick;render();}));
   on('tabSetup','click',()=>{st.tab='setup';render();});
   on('tabSheets','click',()=>{st.tab='sheets';render();});
