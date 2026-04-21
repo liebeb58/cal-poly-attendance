@@ -3,7 +3,19 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Attendance Check-In — Prof. Lieberman (Cal Poly)</title>
+<title>Attendance Check-In</title>
+<!--
+  attendance-lieberman.html — Cal Poly SLO · Prof. Lieberman
+  Spring 2026 · ITP 428 / ITP 406 / BUS 310-313
+
+  VERSION: 2026-04-20-hardcoded-config
+
+  BEFORE DEPLOYING: fill in the COURSE_CONFIG block just below the <script>
+  tag. Students' phones read those values — if you leave them blank, students
+  will see "No Sheets URL configured", "Location: Not checked", and
+  "Session code: Incorrect" because their devices have no way to know your
+  per-course settings.
+-->
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -94,9 +106,6 @@ hr { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
 .export-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .login-wrap { max-width: 340px; margin: 3rem auto; }
 .login-logo { width: 44px; height: 44px; border-radius: 50%; background: var(--blue-bg); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
-.course-picker-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 12px; margin-bottom: 1.25rem; }
-.course-card { background: var(--bg); border: 0.5px solid var(--border2); border-radius: var(--radius-lg); padding: 1.25rem 1rem; cursor: pointer; text-align: center; transition: background .15s, border-color .15s; }
-.course-card:hover { background: var(--bg2); }
 .course-pill { padding: 5px 13px; font-size: 12px; font-weight: 600; border-radius: 100px; border: 1.5px solid transparent; cursor: pointer; background: var(--bg2); color: var(--text2); font-family: inherit; transition: all .15s; }
 .course-selector-bar { display: flex; gap: 7px; margin-bottom: 1.25rem; flex-wrap: wrap; }
 .url-box { background: var(--bg2); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 9px 11px; font-family: 'SF Mono','Fira Code',monospace; font-size: 11px; color: var(--text); word-break: break-all; margin-bottom: 4px; }
@@ -107,6 +116,49 @@ hr { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
 <body>
 <div class="page"><div id="app"></div></div>
 <script>
+// ============================================================================
+// COURSE_CONFIG — EDIT THESE THREE BLOCKS, THEN RE-UPLOAD TO GITHUB PAGES.
+// ============================================================================
+// Every student device reads these values. localStorage fallback exists only
+// for the instructor who hasn't baked values in yet — it WILL NOT reach
+// student phones. So anything you want students to see MUST go here.
+//
+// To fill in:
+//  1. `sheetsUrl` — Apps Script Web App /exec URL for that course. You can
+//     reuse the same URL across all three courses (single shared Sheet) or
+//     give each course its own URL. If blank, students can't sync or verify.
+//  2. `classroomLat` / `classroomLng` — decimal-degree GPS coords of the
+//     classroom. Stand in the room and use https://www.gps-coordinates.net or
+//     Google Maps (right-click → coordinates). Leave as `null` to skip the
+//     location check entirely for that course.
+//  3. `classroomRadius` — meters of slack around those coords. 75–150 is
+//     typical for a Cal Poly lecture hall.
+// ----------------------------------------------------------------------------
+const COURSE_CONFIG = {
+  ITP428: {
+    sheetsUrl: '',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
+    classroomLat: null,         // e.g. 35.30050
+    classroomLng: null,         // e.g. -120.66250
+    classroomRadius: 100,
+  },
+  ITP406: {
+    sheetsUrl: 'https://script.google.com/macros/s/AKfycbyBXL7WsWpFAlWui7RpW6w-uwXlbk8oK3DFf4GeRXz0wC4cowMvSfwfLFXObt8Eo5Nu/exec',
+    classroomLat: 35.2974,
+    classroomLng: -120.6644,
+    classroomRadius: 50,
+  },
+  BUS310: {
+    sheetsUrl: '',
+    classroomLat: null,
+    classroomLng: null,
+    classroomRadius: 100,
+  },
+};
+// ============================================================================
+
+// Apps Script code — copy this into Extensions → Apps Script on each of your
+// Google Sheets, then Deploy → New deployment → Web app → Anyone → copy the
+// /exec URL into COURSE_CONFIG above.
 const APPS_SCRIPT_CODE = `function doPost(e) {
   try {
     var data = JSON.parse(e.postData.contents);
@@ -140,9 +192,7 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
     }
     var correctCode = (props.getProperty(codeKey) || '').toUpperCase();
     var submittedCode = (data.code || '').toUpperCase();
-    // Server-side verification is authoritative when a code has been published.
-    // If no code is published server-side, fall back to the client's codeOk flag
-    // so legacy deployments keep working.
+    // Server-side code is authoritative when present.
     var codeOk;
     if (correctCode) {
       codeOk = submittedCode === correctCode;
@@ -178,50 +228,88 @@ function doGet(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 }`;
+
 const COURSES = [
-  { id:'ITP428', label:'ITP 428', color:'#185FA5', bg:'#E6F1FB', txt:'#0C447C' },
-  { id:'ITP406', label:'ITP 406', color:'#0F6E56', bg:'#E1F5EE', txt:'#085041' },
-  { id:'BUS310', label:'Bus 310-313', color:'#154734', bg:'#E4F0E9', txt:'#0B2A1E' } // Cal Poly green
+  { id:'ITP428', label:'ITP 428',     color:'#185FA5', bg:'#E6F1FB', txt:'#0C447C' },
+  { id:'ITP406', label:'ITP 406',     color:'#0F6E56', bg:'#E1F5EE', txt:'#085041' },
+  { id:'BUS310', label:'Bus 310-313', color:'#154734', bg:'#E4F0E9', txt:'#0B2A1E' }  // Cal Poly green
 ];
 const getCourse = id => COURSES.find(c=>c.id===id) || COURSES[0];
 function urlCourse() {
   const p = new URLSearchParams(window.location.search).get('course');
   return (p && COURSES.find(c=>c.id===p)) ? p : null;
 }
+
 const PASS_KEY='attend_pass', DEFAULT_PASS='changeme';
-const SHEETS_KEY_PREFIX='attend_sheets_url_'; // per-course: attend_sheets_url_<courseId>
+const SHEETS_KEY_PREFIX='attend_sheets_url_'; // per-course, instructor-side override only
 function getPass() { return localStorage.getItem(PASS_KEY)||DEFAULT_PASS; }
 function setPass(p) { localStorage.setItem(PASS_KEY,p); }
-function getSheetsUrl(id) { return localStorage.getItem(SHEETS_KEY_PREFIX+id)||''; }
-function setSheetsUrl(id,u) { if(u){localStorage.setItem(SHEETS_KEY_PREFIX+id,u);} else {localStorage.removeItem(SHEETS_KEY_PREFIX+id);} }
-// One-time migration: if any course has no per-course URL but the legacy global
-// URL exists, copy it to each course so an existing instructor keeps working.
-(function migrateLegacySheetsUrl(){
-  var legacy = localStorage.getItem('attend_sheets_url');
-  if(!legacy) return;
-  (COURSES||[]).forEach(function(c){
-    if(!localStorage.getItem(SHEETS_KEY_PREFIX+c.id)){
-      localStorage.setItem(SHEETS_KEY_PREFIX+c.id, legacy);
-    }
-  });
-})();
+
+// Sheets URL resolution: hardcoded COURSE_CONFIG always wins. Instructor's
+// localStorage override is consulted only when no hardcoded value is present
+// (so Barry can still experiment on his desktop before pushing config live).
+function getSheetsUrl(id) {
+  const hardcoded = (COURSE_CONFIG[id] && COURSE_CONFIG[id].sheetsUrl) || '';
+  if (hardcoded) return hardcoded;
+  return localStorage.getItem(SHEETS_KEY_PREFIX+id)||'';
+}
+function setSheetsUrl(id,u) {
+  if(u){localStorage.setItem(SHEETS_KEY_PREFIX+id,u);}
+  else {localStorage.removeItem(SHEETS_KEY_PREFIX+id);}
+}
+// True if the URL comes from COURSE_CONFIG (baked in), false if from localStorage.
+function sheetsUrlIsHardcoded(id) {
+  return Boolean(COURSE_CONFIG[id] && COURSE_CONFIG[id].sheetsUrl);
+}
+
 function cfgKey(id) { return 'attend_cfg_'+id; }
 function recsKey(id) { return 'attend_recs_'+id; }
 function randCode() { const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; return Array.from({length:4},()=>c[Math.floor(Math.random()*c.length)]).join(''); }
+
+// loadCfg: merge order is COURSE_CONFIG (hardcoded) → localStorage → defaults.
+// Hardcoded classroom coords are the source of truth for students. The
+// instructor panel still writes to localStorage so tweaking on the instructor's
+// device is harmless, but students always see COURSE_CONFIG values.
 function loadCfg(id) {
-  try { return Object.assign({sessionCode:randCode(),classroomLat:null,classroomLng:null,classroomRadius:100,classroomSet:false}, JSON.parse(localStorage.getItem(cfgKey(id))||'{}')); }
-  catch(e) { return {sessionCode:randCode(),classroomLat:null,classroomLng:null,classroomRadius:100,classroomSet:false}; }
+  const hc = COURSE_CONFIG[id] || {};
+  const defaults = { sessionCode: randCode(), classroomLat: null, classroomLng: null, classroomRadius: 100, classroomSet: false };
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(cfgKey(id)) || '{}'); } catch(e) {}
+  const merged = Object.assign({}, defaults, stored);
+  // Hardcoded coords override localStorage so every student device sees them.
+  if (hc.classroomLat != null && hc.classroomLng != null) {
+    merged.classroomLat = hc.classroomLat;
+    merged.classroomLng = hc.classroomLng;
+    merged.classroomRadius = hc.classroomRadius || merged.classroomRadius || 100;
+    merged.classroomSet = true;
+  }
+  return merged;
 }
-function saveCfg(id,cfg) { localStorage.setItem(cfgKey(id), JSON.stringify({sessionCode:cfg.sessionCode,classroomLat:cfg.classroomLat,classroomLng:cfg.classroomLng,classroomRadius:cfg.classroomRadius,classroomSet:cfg.classroomSet})); }
+function saveCfg(id,cfg) {
+  localStorage.setItem(cfgKey(id), JSON.stringify({
+    sessionCode: cfg.sessionCode,
+    classroomLat: cfg.classroomLat,
+    classroomLng: cfg.classroomLng,
+    classroomRadius: cfg.classroomRadius,
+    classroomSet: cfg.classroomSet
+  }));
+}
 function loadRecs(id) { try { return JSON.parse(localStorage.getItem(recsKey(id))||'[]'); } catch(e) { return []; } }
 function saveRecs(id,recs) { localStorage.setItem(recsKey(id),JSON.stringify(recs)); }
+
 const fixedCourse = urlCourse();
 const cdata = {};
 COURSES.forEach(c => {
   const cfg = loadCfg(c.id);
-  cdata[c.id] = { ...cfg, records: loadRecs(c.id), newCodeInput:'', newLatInput: cfg.classroomLat ? Number(cfg.classroomLat).toFixed(5) : '', newLngInput: cfg.classroomLng ? Number(cfg.classroomLng).toFixed(5) : '', newRadiusInput: String(cfg.classroomRadius||100) };
+  cdata[c.id] = { ...cfg, records: loadRecs(c.id),
+    newCodeInput:'',
+    newLatInput: cfg.classroomLat != null ? Number(cfg.classroomLat).toFixed(5) : '',
+    newLngInput: cfg.classroomLng != null ? Number(cfg.classroomLng).toFixed(5) : '',
+    newRadiusInput: String(cfg.classroomRadius||100)
+  };
 });
 const cd = id => cdata[id];
+
 const st = {
   view: fixedCourse ? 'student' : 'pick',
   instructorAuthed: false, loginError: false,
@@ -229,16 +317,12 @@ const st = {
   studentCourse: fixedCourse || COURSES[0].id,
   instructorCourse: COURSES[0].id,
   tab: 'setup',
-  // sheetsUrlDraft: per-course in-progress edits to the URL field, keyed by course id.
-  // Actual saved value lives in localStorage via getSheetsUrl(id)/setSheetsUrl(id,url).
   sheetsUrlDraft: {},
-  // codePublishStatus[courseId] = 'idle'|'publishing'|'ok'|'fail'|'none'
-  // 'none' means this course has no Sheets URL configured so server publish is a no-op.
-  codePublishStatus: {},
-  // codePublishedAt[courseId] = Date.now() of last successful publish (number)
+  codePublishStatus: {},   // per-courseId: 'idle'|'publishing'|'ok'|'fail'|'none'
   codePublishedAt: {},
   newPass1: '', newPass2: '', passMsg: ''
 };
+
 function fmt(n,d=5) { return n!=null ? Number(n).toFixed(d) : '--'; }
 function dist(la1,lo1,la2,lo2) {
   const R=6371000,dL=(la2-la1)*Math.PI/180,dG=(lo2-lo1)*Math.PI/180;
@@ -261,12 +345,13 @@ function requestGeo() {
     {enableHighAccuracy:true,timeout:10000,maximumAge:0}
   );
 }
+
 async function postToSheets(rec, courseId) {
-  var url = getSheetsUrl(courseId);
+  const url = getSheetsUrl(courseId);
   if(!url) return {status:'none'};
   try {
-    // text/plain avoids a CORS preflight, and Apps Script /exec returns
-    // Access-Control-Allow-Origin:* so we CAN read the response JSON.
+    // text/plain avoids a CORS preflight; Apps Script /exec returns
+    // Access-Control-Allow-Origin:* so we can read the response JSON.
     const res = await fetch(url, {
       method:'POST',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
@@ -298,15 +383,11 @@ async function publishCodeToServer(courseId, code) {
     return {status:'fail', error: e && e.message};
   }
 }
-// Orchestrates publish: renders 'publishing' state immediately, fires publish,
-// stores final status so the badge updates. Called after Apply / Generate.
 async function publishCurrentCode(courseId) {
   const c = cd(courseId);
-  const hasUrl = Boolean(getSheetsUrl(courseId));
-  if (!hasUrl) {
+  if (!getSheetsUrl(courseId)) {
     st.codePublishStatus[courseId] = 'none';
-    render();
-    return;
+    render(); return;
   }
   st.codePublishStatus[courseId] = 'publishing';
   render();
@@ -321,14 +402,12 @@ async function publishCurrentCode(courseId) {
   }
   render();
 }
+
 let submitted=null, showSuccess=false;
 async function handleSubmit(name,code,courseId) {
   const now=new Date(); const gv=geoVerify(courseId); const c=cd(courseId); const course=getCourse(courseId);
   const submittedCode = code.trim().toUpperCase();
-  // Optimistic client-side verdict - only used if server never returns one
-  // (e.g. no Sheets URL configured, or fetch fails). Server verdict is
-  // authoritative for any deployment with a live Apps Script endpoint.
-  const localCodeOk = submittedCode === c.sessionCode.toUpperCase();
+  const localCodeOk = submittedCode === (c.sessionCode||'').toUpperCase();
   const rec={id:Date.now(),name,courseId,courseLabel:course.label,code:submittedCode,
     codeOk: localCodeOk,
     codeVerifiedBy: 'local-pending',
@@ -359,6 +438,7 @@ function exportCSV(courseId) {
   const a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
   a.download=`attendance-${courseId}-${new Date().toISOString().slice(0,10)}.csv`; a.click();
 }
+
 function render() {
   const app=document.getElementById('app');
   if(showSuccess&&submitted){app.innerHTML=successHTML(submitted);attachE();return;}
@@ -367,11 +447,10 @@ function render() {
   if(!st.instructorAuthed){app.innerHTML=loginHTML();attachE();return;}
   app.innerHTML=instructorHTML();attachE();
 }
+
 function pickHTML() {
-  // Gateway view shown only when someone opens the bare URL with no
-  // ?course=XXXX query param. Students must come in via their Canvas page,
-  // which always carries the right course id — so this view never offers a
-  // course list. Only an instructor-login entry point is exposed here.
+  // Gateway view for bare URL with no ?course= param. Students never see a
+  // course list — they always arrive via Canvas with the right course id.
   return `
 <div style="text-align:center;padding:2rem 0 1.25rem">
   <div class="title">Attendance check-in</div>
@@ -385,6 +464,7 @@ function pickHTML() {
   <button class="btn-sm" id="toInstructor">Instructor login</button>
 </div>`;
 }
+
 function loginHTML() {
   const isDef=getPass()===DEFAULT_PASS;
   return `
@@ -407,10 +487,12 @@ function loginHTML() {
   <div style="text-align:center"><button class="btn-sm" id="backFromLogin" style="border:none;color:var(--text3)">Cancel</button></div>
 </div>`;
 }
+
 function studentHTML() {
   const id=st.studentCourse; const course=getCourse(id); const c=cd(id);
   const gDot=st.geoStatus==='success'?'#3B6D11':st.geoStatus==='loading'?'#BA7517':'#888780';
   const gText=st.geoStatus==='success'?`Location captured (±${Math.round(st.geo.accuracy||0)}m)`:st.geoStatus==='loading'?'Capturing location…':st.geoStatus==='error'?'Location unavailable':st.geoStatus==='unsupported'?'Geolocation not supported':'Location not yet captured';
+  const geoBtnLabel = st.geoStatus==='success' ? 'Refresh' : st.geoStatus==='error' ? 'Retry' : '';
   const today=new Date().toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'});
   return `
 <div class="header-row">
@@ -433,16 +515,17 @@ function studentHTML() {
 </div>
 <div class="card">
   <div class="sec">Location verification</div>
-  <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Your GPS coordinates are captured automatically when this page opens to confirm you are physically in class. The first time you visit, your browser will ask permission — tap Allow. Coordinates are not tracked after submission.</p>
+  <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Your GPS coordinates are captured once to confirm you are physically in class. They are not tracked after submission.</p>
   <div class="geo-row">
     <div class="geo-badge"><span class="dot" style="background:${gDot}"></span><span>${gText}</span></div>
-    ${(st.geoStatus==='error'||st.geoStatus==='unsupported')?`<button class="btn-o" id="geoBtn">Retry</button>`:(st.geoStatus==='success'?`<button class="btn-o" id="geoBtn">Refresh</button>`:'')}
+    ${geoBtnLabel?`<button class="btn-o" id="geoBtn">${geoBtnLabel}</button>`:''}
   </div>
-  ${st.geoStatus==='error'?`<p style="font-size:12px;color:var(--red-text);margin-top:6px">${st.geoError||'Permission denied'} — tap Retry and allow location access, or check your browser settings.</p>`:''}
+  ${st.geoStatus==='error'?`<p style="font-size:12px;color:var(--red-text);margin-top:6px">${st.geoError||'Permission denied'}</p>`:''}
 </div>
 ${getSheetsUrl(id)?`<p style="font-size:12px;color:var(--text3);display:flex;align-items:center;gap:5px;margin-bottom:8px"><span class="dot" style="background:#3B6D11"></span>Responses logged to Google Sheets</p>`:''}
 <button class="btn-p" id="submitBtn" style="background:${course.color}">Submit attendance</button>`;
 }
+
 function instructorHTML() {
   const id=st.instructorCourse;
   const pills=COURSES.map(c=>`<button class="course-pill ${c.id===id?'active':''}" data-ipick="${c.id}" style="${c.id===id?`background:${c.color};color:#fff;border-color:${c.color}`:`color:${c.color};border-color:${c.color}`}">${c.label}</button>`).join('');
@@ -462,6 +545,7 @@ function instructorHTML() {
 </div>
 ${st.tab==='setup'?setupTab(id):st.tab==='sheets'?sheetsTab():recordsTab(id)}`;
 }
+
 function publishBadgeHTML(id) {
   const hasUrl = Boolean(getSheetsUrl(id));
   const status = st.codePublishStatus[id] || (hasUrl ? 'idle' : 'none');
@@ -476,7 +560,7 @@ function publishBadgeHTML(id) {
   } else if (status === 'fail') {
     bg = '#FBE4E4'; fg = '#8C1A1A'; icon = '!'; text = 'Publish failed — students may fail verification. Check your Sheets URL and try Apply again.';
   } else if (status === 'none') {
-    bg = '#F3F2EE'; fg = '#555';   icon = 'i'; text = 'Not published to server — add a Google Sheets URL on the next tab to enable cross-device verification.';
+    bg = '#F3F2EE'; fg = '#555';   icon = 'i'; text = 'Not published to server — fill in COURSE_CONFIG at the top of the HTML (or save a Sheets URL) to enable cross-device verification.';
   } else {
     bg = '#F3F2EE'; fg = '#555';   icon = 'i'; text = 'Apply or Generate to publish this code to your class server.';
   }
@@ -485,8 +569,10 @@ function publishBadgeHTML(id) {
     <span style="line-height:1.35">${text}</span>
   </div>`;
 }
+
 function setupTab(id) {
   const c=cd(id); const course=getCourse(id); const base=window.location.href.split('?')[0];
+  const locSource = (COURSE_CONFIG[id] && COURSE_CONFIG[id].classroomLat != null) ? 'hardcoded' : (c.classroomSet ? 'local' : 'none');
   return `
 <div class="card">
   <div class="sec">Session code — ${course.label}</div>
@@ -501,17 +587,20 @@ function setupTab(id) {
 </div>
 <div class="card">
   <div class="sec">Classroom location — ${course.label}</div>
-  <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Each course can have its own building and room. Set it while standing inside the classroom.</p>
-  ${c.classroomSet?`<div class="info-box">Set: ${fmt(c.classroomLat,4)}°, ${fmt(c.classroomLng,4)}° &middot; ±${c.classroomRadius}m radius</div>`:`<div class="warn-box">No location set for ${course.label} — location check will be skipped.</div>`}
-  <button class="btn-o" id="useMyLoc" style="width:100%;margin-bottom:10px">Use my current location</button>
+  ${locSource==='hardcoded'
+    ? `<div class="info-box">Baked into COURSE_CONFIG (every student device uses these): ${fmt(c.classroomLat,4)}°, ${fmt(c.classroomLng,4)}° &middot; ±${c.classroomRadius}m radius</div>`
+    : locSource==='local'
+      ? `<div class="warn-box">Set on this device only: ${fmt(c.classroomLat,4)}°, ${fmt(c.classroomLng,4)}° &middot; ±${c.classroomRadius}m radius. <strong>Students won't see this</strong> — paste into COURSE_CONFIG at the top of the HTML and re-upload.</div>`
+      : `<div class="warn-box">No classroom location set — location check is skipped. Fill in <code>classroomLat</code> / <code>classroomLng</code> in COURSE_CONFIG for ${course.label} at the top of the HTML.</div>`}
+  <button class="btn-o" id="useMyLoc" style="width:100%;margin-bottom:10px">Use my current location (this device only)</button>
   <hr/>
-  <p style="font-size:12px;color:var(--text2);margin-bottom:8px">Or enter coordinates manually</p>
+  <p style="font-size:12px;color:var(--text2);margin-bottom:8px">Or enter coordinates manually (this device only)</p>
   <div class="row2" style="margin-bottom:8px">
     <div><label>Latitude</label><input type="number" id="latI" placeholder="35.3050" step=".0001" value="${c.newLatInput}"/></div>
     <div><label>Longitude</label><input type="number" id="lngI" placeholder="-120.6625" step=".0001" value="${c.newLngInput}"/></div>
   </div>
   <div style="margin-bottom:8px"><label>Radius (meters)</label><input type="number" id="radI" value="${c.newRadiusInput}" min="10" max="2000"/></div>
-  <button class="btn-o" id="applyLoc" style="width:100%">Set classroom location</button>
+  <button class="btn-o" id="applyLoc" style="width:100%">Set classroom location (this device only)</button>
 </div>
 <div class="card">
   <div class="sec">Student check-in links</div>
@@ -529,58 +618,68 @@ function setupTab(id) {
   <button class="btn-o" id="changePass">Update password</button>
 </div>`;
 }
+
 function sheetsTab() {
   const id = st.instructorCourse;
   const course = getCourse(id);
   const saved = getSheetsUrl(id);
-  const draftVal = (id in st.sheetsUrlDraft) ? st.sheetsUrlDraft[id] : saved;
+  const hardcoded = sheetsUrlIsHardcoded(id);
+  const draftVal = (id in st.sheetsUrlDraft) ? st.sheetsUrlDraft[id] : (hardcoded ? '' : saved);
   const connected = saved.length > 10;
   // Connection summary across all courses
   const summary = COURSES.map(c=>{
     const u=getSheetsUrl(c.id);
+    const src = sheetsUrlIsHardcoded(c.id) ? 'hardcoded' : (u ? 'local override' : '');
     const dot = u ? '#3B6D11' : '#888780';
     return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">
       <span class="dot" style="background:${dot}"></span>
-      <span style="font-weight:600;color:${c.color};min-width:92px">${c.label}</span>
-      <span style="color:var(--text2);font-size:12px;word-break:break-all">${u?u.slice(0,54)+(u.length>54?'…':''):'Not configured'}</span>
+      <span style="font-weight:600;color:${c.color}">${c.label}</span>
+      <span style="color:var(--text3);font-size:11px">${u?src:'not configured'}</span>
     </div>`;
   }).join('');
   return `
 <div class="card">
-  <div class="sec">Per-course Google Sheets</div>
-  <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Each course has its own Apps Script deployment URL. You can point all three at the same sheet (one sheet, three tabs), or give each class its own sheet — useful if you share attendance with different TAs or departments.</p>
-  ${summary}
+  <div class="sec">How it works (Option B — server-side verification)</div>
+  <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Every course posts to an Apps Script that lives next to a Google Sheet. The script stores the current session code per-course and checks every student submission against it, so the same code works across all devices. Each course can share one sheet (separate tabs) or have its own sheet.</p>
 </div>
 <div class="card">
-  <div class="sec">Setup instructions (per course)</div>
-  <div class="step-row"><span class="step-num">1</span><span>Open or create the Google Sheet you want to use for <strong>${course.label}</strong></span></div>
-  <div class="step-row"><span class="step-num">2</span><span>Extensions → <strong>Apps Script</strong>, paste the code below, Save (Ctrl+S)</span></div>
-  <div class="step-row"><span class="step-num">3</span><span>Click <strong>Deploy → New deployment → Web app</strong></span></div>
-  <div class="step-row"><span class="step-num">4</span><span>Set "Who has access" to <strong>Anyone</strong>, deploy, copy the URL</span></div>
-  <div class="step-row"><span class="step-num">5</span><span>Paste the URL below, click Save, then Test connection</span></div>
-  <div class="step-row"><span class="step-num">6</span><span>Switch to another course pill above and repeat (or paste the same URL to share one sheet)</span></div>
+  <div class="sec">Connection summary</div>
+  ${summary}
+  <p style="font-size:11px;color:var(--text3);margin-top:8px">"Hardcoded" means baked into COURSE_CONFIG at the top of the HTML — every student device uses it. "Local override" means only this device knows it.</p>
+</div>
+<div class="card">
+  <div class="sec">Setup instructions</div>
+  <div class="step-row"><span class="step-num">1</span><span>Create a Google Sheet (or re-use an existing one)</span></div>
+  <div class="step-row"><span class="step-num">2</span><span>Extensions → <strong>Apps Script</strong> → paste the code below → Save</span></div>
+  <div class="step-row"><span class="step-num">3</span><span><strong>Deploy → New deployment → Web app</strong> → Execute as Me, Who has access <strong>Anyone</strong> → Deploy</span></div>
+  <div class="step-row"><span class="step-num">4</span><span>Copy the <code>/exec</code> URL, paste it into <code>COURSE_CONFIG</code> at the top of this HTML, re-upload to GitHub Pages</span></div>
+  <div class="step-row"><span class="step-num">5</span><span>Open the instructor panel, pick the course, click <strong>Apply &amp; publish</strong> — the badge should turn green</span></div>
 </div>
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-    <div class="sec" style="margin-bottom:0">Apps Script code (same for every course)</div>
+    <div class="sec" style="margin-bottom:0">Apps Script code</div>
     <button class="btn-sm" id="copyScript">Copy</button>
   </div>
   <pre>${APPS_SCRIPT_CODE.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
 </div>
-<div class="card" style="border-top:3px solid ${course.color}">
-  <div class="sec">Deployment URL — ${course.label}</div>
-  ${connected?`<div class="info-box">Connected — ${course.label} submissions log to this URL.</div>`:`<div class="warn-box">No URL set for ${course.label} — its submissions won't sync to Sheets yet.</div>`}
+<div class="card">
+  <div class="sec">${course.label} — Sheets URL (this-device override)</div>
+  ${hardcoded
+    ? `<div class="info-box">URL is baked into <code>COURSE_CONFIG.${id}.sheetsUrl</code> — every student device uses it. Override below only applies on this device, for testing.</div>`
+    : connected
+      ? `<div class="warn-box">URL set on this device only: <strong>students won't see this</strong>. Paste this URL into <code>COURSE_CONFIG.${id}.sheetsUrl</code> at the top of the HTML and re-upload.</div>`
+      : `<div class="warn-box">No URL configured. Fill in <code>COURSE_CONFIG.${id}.sheetsUrl</code> at the top of the HTML, or save a URL below for local testing.</div>`}
   <div class="field"><label>Apps Script deployment URL for ${course.label}</label>
-    <input type="url" id="sheetsUrlI" placeholder="https://script.google.com/macros/s/..." value="${draftVal}"/>
+    <input type="url" id="sheetsUrlI" placeholder="https://script.google.com/macros/s/..../exec" value="${draftVal}"/>
   </div>
   <div class="row2">
-    <button class="btn-p" id="saveUrl" style="background:${course.color}">Save URL for ${course.label}</button>
+    <button class="btn-p" id="saveUrl" style="background:${course.color}">Save URL (this device)</button>
     <button class="btn-o" id="testUrl" ${!connected?'disabled':''}>Test connection</button>
   </div>
-  ${connected?`<p style="font-size:11px;color:var(--text3);margin-top:6px">After testing, open the sheet and confirm a TEST ENTRY row appeared on the <strong>${course.label}</strong> tab.</p>`:''}
-  ${saved?`<button class="btn-sm" id="clearUrl" style="color:var(--red-text);border-color:var(--red-text);margin-top:8px">Remove URL for ${course.label}</button>`:''}
+  ${saved && !hardcoded ? `<button class="btn-sm" id="clearUrl" style="margin-top:8px;color:var(--red-text);border-color:var(--red-text)">Remove this-device URL</button>`:''}
 </div>`;
 }
+
 function recordsTab(id) {
   const recs=cd(id).records; const course=getCourse(id);
   if(!recs.length) return `<div style="text-align:center;padding:2.5rem 1rem"><p style="font-size:13px;color:var(--text3)">No submissions yet for ${course.label}.</p></div>`;
@@ -610,12 +709,14 @@ function recordsTab(id) {
   <button class="btn-sm" id="clearRecs" style="color:var(--red-text);border-color:var(--red-text)">Clear records</button>
 </div>`;
 }
+
 function syncBadge(s) {
   if(s==='pending') return `<div class="sync-row sync-pend"><span class="dot" style="background:#BA7517"></span>Syncing to Google Sheets…</div>`;
   if(s==='ok') return `<div class="sync-row sync-ok"><span class="dot" style="background:#3B6D11"></span>Saved to Google Sheets</div>`;
   if(s==='fail') return `<div class="sync-row sync-fail"><span class="dot" style="background:#A32D2D"></span>Sheets sync failed — row may still have saved</div>`;
   return `<div class="sync-row sync-none"><span class="dot" style="background:#888780"></span>No Sheets URL configured</div>`;
 }
+
 function successHTML(r) {
   const ok=r.codeOk&&r.geoOk!==false; const course=getCourse(r.courseId);
   return `
@@ -641,6 +742,7 @@ function successHTML(r) {
 ${syncBadge(r.syncStatus)}
 <button class="btn-p" id="anotherBtn" style="margin-top:14px;background:${course.color}">Submit another response</button>`;
 }
+
 function attachE() {
   const on=(id,ev,fn)=>{const e=document.getElementById(id);if(e)e.addEventListener(ev,fn);};
   const iid=st.instructorCourse; const c=cd(iid);
@@ -655,9 +757,7 @@ function attachE() {
   });
   const lp=document.getElementById('loginPass');
   if(lp)lp.addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('loginBtn')?.click();});
-  // [data-pick] handlers removed intentionally: the gateway view no longer
-  // offers a student-facing course picker. Students must arrive via their
-  // Canvas page's ?course=XXXX link.
+  // No student-facing [data-pick] handlers: students never reach the picker.
   document.querySelectorAll('[data-ipick]').forEach(el=>el.addEventListener('click',()=>{st.instructorCourse=el.dataset.ipick;render();}));
   on('tabSetup','click',()=>{st.tab='setup';render();});
   on('tabSheets','click',()=>{st.tab='sheets';render();});
@@ -674,11 +774,11 @@ function attachE() {
   on('applyCode','click',()=>{
     const v=document.getElementById('newCode')?.value.trim().toUpperCase();
     if(!(v&&v.length>=3)){alert('Enter at least 3 characters.');return;}
-    c.sessionCode=v;c.newCodeInput='';saveCfg(iid,c);
+    c.sessionCode=v; c.newCodeInput=''; saveCfg(iid,c);
     publishCurrentCode(iid);
   });
   on('randCode','click',()=>{
-    c.sessionCode=randCode();saveCfg(iid,c);
+    c.sessionCode=randCode(); saveCfg(iid,c);
     publishCurrentCode(iid);
   });
   on('useMyLoc','click',()=>{
@@ -707,17 +807,13 @@ function attachE() {
     setSheetsUrl(iid,u);
     delete st.sheetsUrlDraft[iid];
     render();
-    // If this is the first time a URL is saved for this course, auto-publish
-    // the current session code so the server verification is immediately live.
     if (u && wasEmpty) { publishCurrentCode(iid); }
   });
   on('clearUrl','click',()=>{
-    if(confirm(`Remove the Google Sheets URL for ${getCourse(iid).label}? Submissions for this course will stop syncing until you set a new one.`)){
+    if(confirm(`Remove the this-device Sheets URL for ${getCourse(iid).label}?`)){
       setSheetsUrl(iid,'');
       delete st.sheetsUrlDraft[iid];
-      // Server no longer reachable — reset publish status so the Setup tab
-      // badge reflects the disconnected state.
-      st.codePublishStatus[iid] = 'none';
+      st.codePublishStatus[iid]='none';
       render();
     }
   });
@@ -734,13 +830,10 @@ function attachE() {
   const su=document.getElementById('sheetsUrlI');if(su)su.addEventListener('input',e=>{st.sheetsUrlDraft[iid]=e.target.value;});
   const np1=document.getElementById('newPass1');if(np1)np1.addEventListener('input',e=>st.newPass1=e.target.value);
   const np2=document.getElementById('newPass2');if(np2)np2.addEventListener('input',e=>st.newPass2=e.target.value);
-  // Auto-capture location as soon as the student view first renders in 'idle' state.
-  // Browser still shows a one-time permission prompt (required by spec); subsequent
-  // visits from the same device are silent once the student has clicked Allow.
-  if(st.view==='student'&&!showSuccess&&st.geoStatus==='idle'){
-    setTimeout(requestGeo,120);
-  }
+  // Auto-trigger geolocation when a student lands on the check-in form.
+  if(st.view==='student'&&!showSuccess&&st.geoStatus==='idle'){ setTimeout(requestGeo,120); }
 }
+
 render();
 </script>
 </body>
