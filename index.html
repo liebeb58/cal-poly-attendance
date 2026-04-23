@@ -137,11 +137,11 @@ hr { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
 const COURSE_CONFIG = {
   ITP428: {
     sheetsUrl: '',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
-    classroomLat: null,         // e.g. 35.25989023
-    classroomLng: null,         // e.g. -120.6384286
+    classroomLat: null,         // e.g. 35.30050
+    classroomLng: null,         // e.g. -120.66250
     classroomRadius: 100,
   },
-  ITP406: {
+   ITP406: {
     sheetsUrl: 'https://script.google.com/macros/s/AKfycbyBXL7WsWpFAlWui7RpW6w-uwXlbk8oK3DFf4GeRXz0wC4cowMvSfwfLFXObt8Eo5Nu/exec',
     classroomLat: 35.30001,
     classroomLng: -120.66527,
@@ -324,6 +324,43 @@ const st = {
 };
 
 function fmt(n,d=5) { return n!=null ? Number(n).toFixed(d) : '--'; }
+
+// Reverse-geocode cache — keyed by "lat,lng" rounded to 5 decimals. Values:
+// 'pending' while in flight, the address string on success, null on failure.
+const ADDRESS_CACHE = new Map();
+function addrKey(lat, lng) { return Number(lat).toFixed(5) + ',' + Number(lng).toFixed(5); }
+function cachedAddress(lat, lng) {
+  if(lat==null || lng==null) return null;
+  const v = ADDRESS_CACHE.get(addrKey(lat, lng));
+  return (typeof v === 'string') ? v : null;
+}
+// Fetch human-readable address via BigDataCloud (no API key, CORS-enabled).
+// Called lazily from the Setup tab; failures are silent.
+async function reverseGeocode(lat, lng) {
+  if(lat==null || lng==null) return null;
+  const k = addrKey(lat, lng);
+  if(ADDRESS_CACHE.has(k)) {
+    const v = ADDRESS_CACHE.get(k);
+    return (typeof v === 'string') ? v : null;
+  }
+  ADDRESS_CACHE.set(k, 'pending');
+  try {
+    const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`;
+    const res = await fetch(url);
+    const j = await res.json();
+    // Compose a short address: "locality, city" with street if available.
+    const parts = [];
+    if(j.locality && j.locality !== j.city) parts.push(j.locality);
+    if(j.city) parts.push(j.city);
+    else if(j.principalSubdivision) parts.push(j.principalSubdivision);
+    const addr = parts.length ? parts.join(', ') : (j.countryName || null);
+    ADDRESS_CACHE.set(k, addr || null);
+    return addr;
+  } catch(e) {
+    ADDRESS_CACHE.set(k, null);
+    return null;
+  }
+}
 function dist(la1,lo1,la2,lo2) {
   const R=6371000,dL=(la2-la1)*Math.PI/180,dG=(lo2-lo1)*Math.PI/180;
   const a=Math.sin(dL/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dG/2)**2;
@@ -573,6 +610,19 @@ function publishBadgeHTML(id) {
 function setupTab(id) {
   const c=cd(id); const course=getCourse(id); const base=window.location.href.split('?')[0];
   const locSource = (COURSE_CONFIG[id] && COURSE_CONFIG[id].classroomLat != null) ? 'hardcoded' : (c.classroomSet ? 'local' : 'none');
+  // Lazy reverse-geocode of the saved classroom coords so the instructor can
+  // visually confirm the saved location matches the actual classroom building.
+  let addrHTML = '';
+  if(c.classroomLat != null && c.classroomLng != null) {
+    const addr = cachedAddress(c.classroomLat, c.classroomLng);
+    if(addr) {
+      addrHTML = `<div style="font-size:12px;color:var(--text2);margin-top:6px">Resolved address: <strong>${addr}</strong> <span style="color:var(--text3)">— verify this is the classroom, not home/office</span></div>`;
+    } else {
+      addrHTML = `<div style="font-size:12px;color:var(--text3);margin-top:6px" id="addrPending">Looking up address…</div>`;
+      // Kick off lookup, then re-render.
+      reverseGeocode(c.classroomLat, c.classroomLng).then(()=>render());
+    }
+  }
   return `
 <div class="card">
   <div class="sec">Session code — ${course.label}</div>
@@ -592,7 +642,8 @@ function setupTab(id) {
     : locSource==='local'
       ? `<div class="warn-box">Set on this device only: ${fmt(c.classroomLat,4)}°, ${fmt(c.classroomLng,4)}° &middot; ±${c.classroomRadius}m radius. <strong>Students won't see this</strong> — paste into COURSE_CONFIG at the top of the HTML and re-upload.</div>`
       : `<div class="warn-box">No classroom location set — location check is skipped. Fill in <code>classroomLat</code> / <code>classroomLng</code> in COURSE_CONFIG for ${course.label} at the top of the HTML.</div>`}
-  <button class="btn-o" id="useMyLoc" style="width:100%;margin-bottom:10px">Use my current location (this device only)</button>
+  ${addrHTML}
+  <button class="btn-o" id="useMyLoc" style="width:100%;margin-top:10px;margin-bottom:10px">Use my current location (this device only)</button>
   <hr/>
   <p style="font-size:12px;color:var(--text2);margin-bottom:8px">Or enter coordinates manually (this device only)</p>
   <div class="row2" style="margin-bottom:8px">
@@ -783,13 +834,47 @@ function attachE() {
   });
   on('useMyLoc','click',()=>{
     if(!navigator.geolocation){alert('Geolocation not supported.');return;}
-    navigator.geolocation.getCurrentPosition(p=>{c.classroomLat=p.coords.latitude;c.classroomLng=p.coords.longitude;c.classroomSet=true;c.newLatInput=p.coords.latitude.toFixed(5);c.newLngInput=p.coords.longitude.toFixed(5);saveCfg(iid,c);render();},e=>alert('Could not get location: '+e.message),{enableHighAccuracy:true});
+    const btn = document.getElementById('useMyLoc');
+    if(btn){ btn.disabled = true; btn.textContent = 'Getting location…'; }
+    navigator.geolocation.getCurrentPosition(async p=>{
+      const la = p.coords.latitude, lo = p.coords.longitude, acc = p.coords.accuracy;
+      if(btn){ btn.textContent = 'Looking up address…'; }
+      const addr = await reverseGeocode(la, lo);
+      const course = getCourse(iid);
+      const coordStr = `${la.toFixed(5)}°, ${lo.toFixed(5)}° (±${Math.round(acc||0)}m)`;
+      const addrLine = addr ? `\nAddress: ${addr}` : '\nAddress: (lookup failed — verify manually on a map before saving)';
+      const msg =
+        `Save your CURRENT location as the classroom for ${course.label}?\n\n` +
+        `Coordinates: ${coordStr}${addrLine}\n\n` +
+        `WARNING: Only click OK if you are physically standing IN the classroom right now. ` +
+        `If you click OK while at home or elsewhere, every student will be checked against the wrong location.`;
+      if(btn){ btn.disabled = false; btn.textContent = 'Use my current location (this device only)'; }
+      if(!window.confirm(msg)) { render(); return; }
+      c.classroomLat = la; c.classroomLng = lo; c.classroomSet = true;
+      c.newLatInput = la.toFixed(5); c.newLngInput = lo.toFixed(5);
+      saveCfg(iid,c); render();
+    },
+    e=>{
+      if(btn){ btn.disabled = false; btn.textContent = 'Use my current location (this device only)'; }
+      alert('Could not get location: '+e.message);
+    },
+    {enableHighAccuracy:true,timeout:10000,maximumAge:0});
   });
-  on('applyLoc','click',()=>{
+  on('applyLoc','click',async ()=>{
     const la=parseFloat(document.getElementById('latI')?.value);
     const lo=parseFloat(document.getElementById('lngI')?.value);
     const r=parseFloat(document.getElementById('radI')?.value);
     if(isNaN(la)||isNaN(lo)){alert('Enter valid coordinates.');return;}
+    const btn = document.getElementById('applyLoc');
+    if(btn){ btn.disabled = true; btn.textContent = 'Looking up address…'; }
+    const addr = await reverseGeocode(la, lo);
+    const course = getCourse(iid);
+    const addrLine = addr ? `\nAddress: ${addr}` : '\nAddress: (lookup failed — verify manually on a map before saving)';
+    const msg =
+      `Save ${la.toFixed(5)}°, ${lo.toFixed(5)}° as the classroom for ${course.label}?${addrLine}\n\n` +
+      `Double-check that this address is the actual classroom building on campus, not your home or office.`;
+    if(btn){ btn.disabled = false; btn.textContent = 'Set classroom location (this device only)'; }
+    if(!window.confirm(msg)){ render(); return; }
     c.classroomLat=la;c.classroomLng=lo;c.classroomRadius=r||100;c.classroomSet=true;saveCfg(iid,c);render();
   });
   on('changePass','click',()=>{
