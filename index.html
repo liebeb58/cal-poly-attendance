@@ -136,22 +136,22 @@ hr { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
 // ----------------------------------------------------------------------------
 const COURSE_CONFIG = {
   ITP428: {
-    sheetsUrl: 'https://script.google.com/macros/s/AKfycbx7AsbtgY7A_rhXFYSwQS43zyJJQI_zrmGXsGVoJkX_sFWf_r-Sr4Zgh06ZQEBTgCeLPQ/exec',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
-    classroomLat: 35.30003,         // e.g. 35.30050
-    classroomLng: -120.66443,         // e.g. -120.66250
-    classroomRadius: 50,
+    sheetsUrl: '',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
+    classroomLat: null,         // e.g. 35.30050
+    classroomLng: null,         // e.g. -120.66250
+    classroomRadius: 100,
   },
-   ITP406: {
-    sheetsUrl: 'https://script.google.com/macros/s/AKfycbyBXL7WsWpFAlWui7RpW6w-uwXlbk8oK3DFf4GeRXz0wC4cowMvSfwfLFXObt8Eo5Nu/exec',
-    classroomLat: 35.30001,
-    classroomLng: -120.66527,
-    classroomRadius: 50,
+  ITP406: {
+    sheetsUrl: '',
+    classroomLat: null,
+    classroomLng: null,
+    classroomRadius: 100,
   },
   BUS310: {
-    sheetsUrl: 'https://script.google.com/macros/s/AKfycbxWHvp8c8-TNG-wmp_3PwnR43NblZXS33M_vPeF8LpUv-MsHWXnlocoIbw2SoJQ5o_pjQ/exec',
-    classroomLat: 35.30003,
-    classroomLng: -120.66443,
-    classroomRadius: 50,
+    sheetsUrl: '',
+    classroomLat: null,
+    classroomLng: null,
+    classroomRadius: 100,
   },
 };
 // ============================================================================
@@ -199,9 +199,17 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
     } else {
       codeOk = Boolean(data.codeOk);
     }
+    // Prefer richer client-sent locationCheck (PASS/FAIL/NO GPS/N/A); fall back
+    // to the older boolean-only form for older clients still in the wild.
+    var locCheck = data.locationCheck;
+    if (!locCheck) {
+      locCheck = data.geoOk === true ? 'PASS'
+        : data.geoOk === false ? 'FAIL'
+        : 'N/A';
+    }
     sheet.appendRow([data.date, data.time, data.name, data.course, data.code,
       codeOk ? 'PASS' : 'FAIL',
-      data.geoOk === true ? 'PASS' : data.geoOk === false ? 'FAIL' : 'N/A',
+      locCheck,
       data.lat || '', data.lng || '', data.accuracy || '']);
     return ContentService.createTextOutput(JSON.stringify({
       ok: true,
@@ -366,20 +374,38 @@ function dist(la1,lo1,la2,lo2) {
   const a=Math.sin(dL/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dG/2)**2;
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
+// Returns: {ok, status, label, distance}
+//   status: 'no-classroom' | 'no-gps' | 'in-range' | 'out-of-range'
+//   ok:     null (no-classroom or no-gps) | true (in-range) | false (out-of-range)
+// In-range is computed with accuracy-aware leniency: a fix that reads d meters
+// from the classroom with ±a accuracy is treated as in-range if (d - a) <= radius.
+// This protects against indoor GPS noise (where ±50–100m is common) while still
+// rejecting students who are clearly far away.
 function geoVerify(id) {
   const c=cd(id);
-  if(!c.classroomSet) return {ok:null,label:'No classroom set'};
-  if(!st.geo) return {ok:false,label:'Location not captured'};
+  if(!c.classroomSet) return {ok:null,status:'no-classroom',label:'No classroom set',distance:null};
+  if(!st.geo) return {ok:null,status:'no-gps',label:'GPS unavailable',distance:null};
   const d=dist(st.geo.latitude,st.geo.longitude,c.classroomLat,c.classroomLng);
-  return {ok:d<=c.classroomRadius, label: d<=c.classroomRadius ? `Within range (${Math.round(d)}m away)` : `Out of range (${Math.round(d)}m away)`};
+  // Cap accuracy contribution at 100m so that very-coarse fixes (e.g. ±500m)
+  // don't auto-pass. With 50m radius + 100m max accuracy => effective max 150m.
+  const acc = Math.min(Math.max(st.geo.accuracy||0, 0), 100);
+  const inRange = (d - acc) <= c.classroomRadius;
+  return {
+    ok: inRange,
+    status: inRange ? 'in-range' : 'out-of-range',
+    label: inRange
+      ? `Within range (${Math.round(d)}m, ±${Math.round(st.geo.accuracy||0)}m)`
+      : `Out of range (${Math.round(d)}m, ±${Math.round(st.geo.accuracy||0)}m)`,
+    distance: d
+  };
 }
 function requestGeo() {
-  st.geoStatus='loading'; render();
+  st.geoStatus='loading'; st.geoError=null; render();
   if(!navigator.geolocation){st.geoStatus='unsupported';render();return;}
   navigator.geolocation.getCurrentPosition(
     p=>{st.geo=p.coords;st.geoStatus='success';render();},
     e=>{st.geoStatus='error';st.geoError=e.message;render();},
-    {enableHighAccuracy:true,timeout:10000,maximumAge:0}
+    {enableHighAccuracy:true,timeout:20000,maximumAge:0}
   );
 }
 
@@ -445,12 +471,21 @@ async function handleSubmit(name,code,courseId) {
   const now=new Date(); const gv=geoVerify(courseId); const c=cd(courseId); const course=getCourse(courseId);
   const submittedCode = code.trim().toUpperCase();
   const localCodeOk = submittedCode === (c.sessionCode||'').toUpperCase();
+  // Map gv.status to a human label for the spreadsheet's Location Check column.
+  // PASS / FAIL / NO GPS / N/A — distinct so Barry can see at a glance whether
+  // a student was physically far vs. their phone never produced a fix.
+  const locationCheck = gv.status === 'in-range' ? 'PASS'
+    : gv.status === 'out-of-range' ? 'FAIL'
+    : gv.status === 'no-gps' ? 'NO GPS'
+    : 'N/A';
   const rec={id:Date.now(),name,courseId,courseLabel:course.label,code:submittedCode,
     codeOk: localCodeOk,
     codeVerifiedBy: 'local-pending',
     time:now.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),
     date:now.toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'}),
-    geoOk:gv.ok,lat:st.geo?st.geo.latitude:null,lng:st.geo?st.geo.longitude:null,
+    geoOk:gv.ok, geoStatus: gv.status, locationCheck,
+    distance: gv.distance != null ? Math.round(gv.distance) : null,
+    lat:st.geo?st.geo.latitude:null,lng:st.geo?st.geo.longitude:null,
     accuracy:st.geo?Math.round(st.geo.accuracy):null,syncStatus:'pending'};
   c.records.push(rec); saveRecs(courseId,c.records);
   submitted=rec; showSuccess=true; render();
@@ -470,7 +505,7 @@ async function handleSubmit(name,code,courseId) {
 function exportCSV(courseId) {
   const recs=cd(courseId).records; const course=getCourse(courseId);
   const hdr=['Date','Time','Name','Course','Code','Code Check','Location Check','Lat','Lng','Accuracy'];
-  const rows=recs.map(r=>[r.date,r.time,r.name,r.courseLabel,r.code,r.codeOk?'PASS':'FAIL',r.geoOk===true?'PASS':r.geoOk===false?'FAIL':'N/A',r.lat||'',r.lng||'',r.accuracy||'']);
+  const rows=recs.map(r=>[r.date,r.time,r.name,r.courseLabel,r.code,r.codeOk?'PASS':'FAIL',r.locationCheck||(r.geoOk===true?'PASS':r.geoOk===false?'FAIL':'N/A'),r.lat||'',r.lng||'',r.accuracy||'']);
   const csv=[hdr,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
   const a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
   a.download=`attendance-${courseId}-${new Date().toISOString().slice(0,10)}.csv`; a.click();
@@ -527,9 +562,13 @@ function loginHTML() {
 
 function studentHTML() {
   const id=st.studentCourse; const course=getCourse(id); const c=cd(id);
-  const gDot=st.geoStatus==='success'?'#3B6D11':st.geoStatus==='loading'?'#BA7517':'#888780';
+  const gDot=st.geoStatus==='success'?'#3B6D11':st.geoStatus==='loading'?'#BA7517':st.geoStatus==='error'||st.geoStatus==='unsupported'?'#791F1F':'#888780';
   const gText=st.geoStatus==='success'?`Location captured (±${Math.round(st.geo.accuracy||0)}m)`:st.geoStatus==='loading'?'Capturing location…':st.geoStatus==='error'?'Location unavailable':st.geoStatus==='unsupported'?'Geolocation not supported':'Location not yet captured';
-  const geoBtnLabel = st.geoStatus==='success' ? 'Refresh' : st.geoStatus==='error' ? 'Retry' : '';
+  const geoBtnLabel = st.geoStatus==='success' ? 'Refresh' : st.geoStatus==='error'||st.geoStatus==='unsupported' ? 'Retry' : '';
+  // Submit is disabled while GPS is still locking on. Students can override
+  // (submit anyway with no location) only after explicitly retrying.
+  const submitDisabled = st.geoStatus==='loading';
+  const submitLabel = submitDisabled ? 'Waiting for GPS…' : (st.geoStatus==='error'||st.geoStatus==='unsupported') ? 'Submit without location' : 'Submit attendance';
   const today=new Date().toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'});
   return `
 <div class="header-row">
@@ -557,10 +596,11 @@ function studentHTML() {
     <div class="geo-badge"><span class="dot" style="background:${gDot}"></span><span>${gText}</span></div>
     ${geoBtnLabel?`<button class="btn-o" id="geoBtn">${geoBtnLabel}</button>`:''}
   </div>
-  ${st.geoStatus==='error'?`<p style="font-size:12px;color:var(--red-text);margin-top:6px">${st.geoError||'Permission denied'}</p>`:''}
+  ${st.geoStatus==='error'?`<p style="font-size:12px;color:var(--red-text);margin-top:6px">${st.geoError||'Permission denied'}. Tap Retry, then make sure your browser has location permission.</p>`:''}
+  ${st.geoStatus==='loading'?`<p style="font-size:12px;color:var(--text2);margin-top:6px">Indoor GPS can take 10–20 seconds. The Submit button unlocks once your location is captured.</p>`:''}
 </div>
 ${getSheetsUrl(id)?`<p style="font-size:12px;color:var(--text3);display:flex;align-items:center;gap:5px;margin-bottom:8px"><span class="dot" style="background:#3B6D11"></span>Responses logged to Google Sheets</p>`:''}
-<button class="btn-p" id="submitBtn" style="background:${course.color}">Submit attendance</button>`;
+<button class="btn-p" id="submitBtn" style="background:${course.color}${submitDisabled?';opacity:.55;cursor:not-allowed':''}" ${submitDisabled?'disabled':''}>${submitLabel}</button>`;
 }
 
 function instructorHTML() {
@@ -734,11 +774,13 @@ function sheetsTab() {
 function recordsTab(id) {
   const recs=cd(id).records; const course=getCourse(id);
   if(!recs.length) return `<div style="text-align:center;padding:2.5rem 1rem"><p style="font-size:13px;color:var(--text3)">No submissions yet for ${course.label}.</p></div>`;
-  const passed=recs.filter(r=>r.codeOk&&r.geoOk!==false).length;
+  // "Passed" = code correct AND not actively out-of-range. No-GPS rows count as
+  // passed for code purposes (instructor decides what to do with them manually).
+  const passed=recs.filter(r=>r.codeOk && r.geoStatus !== 'out-of-range' && !(r.geoOk===false && r.lat!=null)).length;
   const synced=recs.filter(r=>r.syncStatus==='ok').length;
   const rows=recs.slice().reverse().map(r=>{
     const cb=r.codeOk?`<span class="badge-g">Code ✓</span>`:`<span class="badge-r">Code ✗</span>`;
-    const gb=r.geoOk===true?`<span class="badge-g">Loc ✓</span>`:r.geoOk===false?`<span class="badge-r">Loc ✗</span>`:`<span style="font-size:11px;color:var(--text3)">No geo</span>`;
+    const gb=r.geoStatus==='in-range'||r.geoOk===true?`<span class="badge-g">Loc ✓</span>`:r.geoStatus==='out-of-range'||(r.geoOk===false&&r.lat!=null)?`<span class="badge-r">Loc ✗</span>`:r.geoStatus==='no-gps'||(r.geoOk===false&&r.lat==null)?`<span style="display:inline-block;padding:2px 8px;border-radius:100px;font-size:11px;font-weight:600;background:var(--amber-bg);color:var(--amber-text)">No GPS</span>`:`<span style="font-size:11px;color:var(--text3)">No geo</span>`;
     const sb=r.syncStatus==='ok'?`<span class="badge-g">Synced</span>`:r.syncStatus==='fail'?`<span class="badge-r">Sync fail</span>`:r.syncStatus==='pending'?`<span class="badge-a">Syncing…</span>`:`<span style="font-size:11px;color:var(--text3)">Local</span>`;
     return `<tr><td>${r.name}</td><td>${r.date}<br><span style="color:var(--text2)">${r.time}</span></td><td style="white-space:nowrap">${cb} ${gb}</td><td>${sb}</td></tr>`;
   }).join('');
@@ -746,7 +788,7 @@ function recordsTab(id) {
 <div class="card metric-grid">
   <div class="metric"><div class="metric-label">Total</div><div class="metric-val">${recs.length}</div></div>
   <div class="metric"><div class="metric-label">Verified</div><div class="metric-val">${passed}</div></div>
-  <div class="metric"><div class="metric-label">Flagged</div><div class="metric-val">${recs.filter(r=>!r.codeOk||r.geoOk===false).length}</div></div>
+  <div class="metric"><div class="metric-label">Flagged</div><div class="metric-val">${recs.filter(r=>!r.codeOk || r.geoStatus==='out-of-range' || (r.geoOk===false&&r.lat!=null)).length}</div></div>
   <div class="metric"><div class="metric-label">Synced</div><div class="metric-val">${synced}</div></div>
 </div>
 <div class="card" style="padding:0"><div class="log-wrap">
@@ -769,7 +811,24 @@ function syncBadge(s) {
 }
 
 function successHTML(r) {
-  const ok=r.codeOk&&r.geoOk!==false; const course=getCourse(r.courseId);
+  // Green banner only when code is correct AND we have a real in-range fix.
+  // No-GPS still shows the warning banner so the student knows their submission
+  // is incomplete and should flag it to the instructor.
+  const ok=r.codeOk && (r.geoStatus==='in-range' || (r.geoOk===true));
+  const course=getCourse(r.courseId);
+  // Pick the right Location row label/badge based on the status fields the
+  // client recorded. 'no-gps' renders as a yellow warning, NOT a red FAIL —
+  // so students who couldn't get a GPS lock aren't told they were "out of range."
+  let locBadge;
+  if (r.geoStatus === 'in-range' || r.geoOk === true) {
+    locBadge = `<span class="badge-g">In range${r.distance!=null?` (${r.distance}m)`:''}</span>`;
+  } else if (r.geoStatus === 'out-of-range' || (r.geoOk === false && r.lat != null)) {
+    locBadge = `<span class="badge-r">Out of range${r.distance!=null?` (${r.distance}m)`:''}</span>`;
+  } else if (r.geoStatus === 'no-gps' || (r.geoOk === false && r.lat == null)) {
+    locBadge = `<span style="display:inline-block;padding:3px 10px;border-radius:100px;font-size:11px;font-weight:700;background:var(--amber-bg);color:var(--amber-text)">GPS unavailable — show your instructor</span>`;
+  } else {
+    locBadge = `<span style="font-size:12px;color:var(--text3)">Not checked</span>`;
+  }
   return `
 <div class="success-wrap">
   <div style="display:inline-block;background:${course.bg};color:${course.txt};font-size:12px;font-weight:700;padding:3px 10px;border-radius:100px;margin-bottom:10px">${course.label}</div>
@@ -787,7 +846,7 @@ function successHTML(r) {
   <div class="rec-row"><span class="rk">Date</span><span class="rv">${r.date}</span></div>
   <div class="rec-row"><span class="rk">Time</span><span class="rv">${r.time}</span></div>
   <div class="rec-row"><span class="rk">Session code</span><span class="rv">${r.codeOk?'<span class="badge-g">Correct</span>':'<span class="badge-r">Incorrect</span>'}</span></div>
-  <div class="rec-row"><span class="rk">Location</span><span class="rv">${r.geoOk===true?'<span class="badge-g">In range</span>':r.geoOk===false?'<span class="badge-r">Out of range</span>':'<span style="font-size:12px;color:var(--text3)">Not checked</span>'}</span></div>
+  <div class="rec-row"><span class="rk">Location</span><span class="rv">${locBadge}</span></div>
   ${r.lat!=null?`<div class="rec-row"><span class="rk">Coordinates</span><span style="font-size:11px;font-family:monospace;color:var(--text2)">${fmt(r.lat,5)}°, ${fmt(r.lng,5)}°</span></div>`:''}
 </div>
 ${syncBadge(r.syncStatus)}
