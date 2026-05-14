@@ -8,7 +8,7 @@
   attendance-lieberman.html — Cal Poly SLO · Prof. Lieberman
   Spring 2026 · ITP 428 / ITP 406 / BUS 310-313
 
-  VERSION: 2026-04-20-hardcoded-config
+  VERSION: 2026-05-13-watchposition-silent-refine
 
   BEFORE DEPLOYING: fill in the COURSE_CONFIG block just below the <script>
   tag. Students' phones read those values — if you leave them blank, students
@@ -106,11 +106,20 @@ hr { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
 .export-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .login-wrap { max-width: 340px; margin: 3rem auto; }
 .login-logo { width: 44px; height: 44px; border-radius: 50%; background: var(--blue-bg); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
+.course-picker-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 12px; margin-bottom: 1.25rem; }
+.course-card { background: var(--bg); border: 0.5px solid var(--border2); border-radius: var(--radius-lg); padding: 1.25rem 1rem; cursor: pointer; text-align: center; transition: background .15s, border-color .15s; }
+.course-card:hover { background: var(--bg2); }
 .course-pill { padding: 5px 13px; font-size: 12px; font-weight: 600; border-radius: 100px; border: 1.5px solid transparent; cursor: pointer; background: var(--bg2); color: var(--text2); font-family: inherit; transition: all .15s; }
 .course-selector-bar { display: flex; gap: 7px; margin-bottom: 1.25rem; flex-wrap: wrap; }
 .url-box { background: var(--bg2); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 9px 11px; font-family: 'SF Mono','Fira Code',monospace; font-size: 11px; color: var(--text); word-break: break-all; margin-bottom: 4px; }
 .shake { animation: shake .35s ease; }
 @keyframes shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 60%{transform:translateX(6px)} 80%{transform:translateX(-3px)} }
+.spinner { width: 38px; height: 38px; border: 3px solid var(--bg3); border-top-color: var(--blue); border-radius: 50%; animation: spin .9s linear infinite; margin: 0 auto 14px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.locate-card { padding: 28px 18px; text-align: center; }
+.locate-card .progress-bar { height: 6px; background: var(--bg3); border-radius: 100px; overflow: hidden; margin: 12px auto 0; max-width: 220px; }
+.locate-card .progress-fill { height: 100%; background: var(--blue); width: 0%; transition: width .35s ease; }
+.locate-card .accuracy-pill { display: inline-block; background: var(--bg2); border-radius: 100px; padding: 4px 12px; font-size: 11px; font-weight: 600; color: var(--text2); margin-top: 10px; font-family: 'SF Mono', monospace; }
 </style>
 </head>
 <body>
@@ -323,6 +332,7 @@ const st = {
   view: fixedCourse ? 'student' : 'pick',
   instructorAuthed: false, loginError: false,
   geo: null, geoStatus: 'idle', geoError: null,
+  geoWatchId: null, geoTimeoutId: null, geoStartedAt: 0,
   studentCourse: fixedCourse || COURSES[0].id,
   instructorCourse: COURSES[0].id,
   tab: 'setup',
@@ -400,14 +410,75 @@ function geoVerify(id) {
     distance: d
   };
 }
+// Continuous GPS lock with progressive refinement.
+//
+// On the student page we use watchPosition (not one-shot getCurrentPosition)
+// so the OS keeps sending us better fixes as GPS warms up — typical iOS/Android
+// pattern: first fix is ±300m Wi-Fi, then ±60m cell, then ±10m real GPS over
+// 5–15 seconds. Each better fix overrides the previous one. The student sees
+// a spinner card until the FIRST fix arrives (any accuracy), then the form
+// appears; subsequent refinements update the accuracy pill silently.
+//
+// If 25 seconds elapse with no fix at all, geoStatus flips to 'timeout' and
+// the student gets an escape-hatch ("Submit without location") so a stuck
+// phone doesn't lock them out entirely.
 function requestGeo() {
-  st.geoStatus='loading'; st.geoError=null; render();
+  stopGeoWatch();
+  st.geoStatus='loading'; st.geoError=null; st.geo=null;
+  st.geoStartedAt = Date.now();
   if(!navigator.geolocation){st.geoStatus='unsupported';render();return;}
-  navigator.geolocation.getCurrentPosition(
-    p=>{st.geo=p.coords;st.geoStatus='success';render();},
-    e=>{st.geoStatus='error';st.geoError=e.message;render();},
-    {enableHighAccuracy:true,timeout:20000,maximumAge:0}
+  // Escape-hatch timer: if no fix at all after 25s, surface a submit-anyway button.
+  st.geoTimeoutId = setTimeout(()=>{
+    if(!st.geo) { st.geoStatus='timeout'; render(); }
+  }, 25000);
+  st.geoWatchId = navigator.geolocation.watchPosition(
+    p=>{
+      const isFirstFix = !st.geo;
+      const cur = p.coords;
+      // Keep the best (lowest-accuracy-number) fix we've seen.
+      if(!st.geo || (cur.accuracy != null && (st.geo.accuracy == null || cur.accuracy < st.geo.accuracy))) {
+        st.geo = cur;
+      }
+      const wasNonSuccess = st.geoStatus !== 'success';
+      st.geoStatus = 'success';
+      if (isFirstFix || wasNonSuccess) {
+        // First fix (or transition from loading/error → success): full render
+        // to swap the spinner card for the actual form.
+        render();
+      } else {
+        // CRITICAL: subsequent watchPosition callbacks fire every 1–3 seconds
+        // on iOS/Android. They must NOT call render() — render() replaces
+        // app.innerHTML, which wipes whatever the student has typed into the
+        // name and code fields. Instead, silently update st.geo and patch the
+        // visible accuracy text via DOM. This preserves user input while still
+        // letting accuracy improve in the background.
+        try {
+          const badge = document.querySelector('.geo-badge span:last-child');
+          if (badge && st.geo && st.geo.accuracy != null) {
+            badge.textContent = 'Location captured (±' + Math.round(st.geo.accuracy) + 'm)';
+          }
+        } catch(_) {}
+      }
+    },
+    e=>{
+      // Only surface an error if we don't already have a fix in hand.
+      if(!st.geo) {
+        st.geoStatus='error'; st.geoError=e.message; render();
+      }
+    },
+    {enableHighAccuracy:true, timeout:25000, maximumAge:0}
   );
+  render();
+}
+function stopGeoWatch() {
+  if(st.geoWatchId != null) {
+    try { navigator.geolocation.clearWatch(st.geoWatchId); } catch(_) {}
+    st.geoWatchId = null;
+  }
+  if(st.geoTimeoutId != null) {
+    clearTimeout(st.geoTimeoutId);
+    st.geoTimeoutId = null;
+  }
 }
 
 async function postToSheets(rec, courseId) {
@@ -489,7 +560,7 @@ async function handleSubmit(name,code,courseId) {
     lat:st.geo?st.geo.latitude:null,lng:st.geo?st.geo.longitude:null,
     accuracy:st.geo?Math.round(st.geo.accuracy):null,syncStatus:'pending'};
   c.records.push(rec); saveRecs(courseId,c.records);
-  submitted=rec; showSuccess=true; render();
+  submitted=rec; showSuccess=true; stopGeoWatch(); render();
   const sr=await postToSheets({...rec,course:course.label}, courseId);
   rec.syncStatus=sr.status;
   if (sr.status === 'ok' && sr.body && typeof sr.body.codeOk === 'boolean') {
@@ -563,15 +634,8 @@ function loginHTML() {
 
 function studentHTML() {
   const id=st.studentCourse; const course=getCourse(id); const c=cd(id);
-  const gDot=st.geoStatus==='success'?'#3B6D11':st.geoStatus==='loading'?'#BA7517':st.geoStatus==='error'||st.geoStatus==='unsupported'?'#791F1F':'#888780';
-  const gText=st.geoStatus==='success'?`Location captured (±${Math.round(st.geo.accuracy||0)}m)`:st.geoStatus==='loading'?'Capturing location…':st.geoStatus==='error'?'Location unavailable':st.geoStatus==='unsupported'?'Geolocation not supported':'Location not yet captured';
-  const geoBtnLabel = st.geoStatus==='success' ? 'Refresh' : st.geoStatus==='error'||st.geoStatus==='unsupported' ? 'Retry' : '';
-  // Submit is disabled while GPS is still locking on. Students can override
-  // (submit anyway with no location) only after explicitly retrying.
-  const submitDisabled = st.geoStatus==='loading';
-  const submitLabel = submitDisabled ? 'Waiting for GPS…' : (st.geoStatus==='error'||st.geoStatus==='unsupported') ? 'Submit without location' : 'Submit attendance';
   const today=new Date().toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'});
-  return `
+  const courseHeader = `
 <div class="header-row">
   <div>
     <div style="display:inline-block;background:${course.bg};color:${course.txt};font-size:12px;font-weight:700;padding:3px 10px;border-radius:100px;margin-bottom:6px">${course.label}</div>
@@ -581,7 +645,66 @@ function studentHTML() {
   <div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
     <button class="btn-sm" id="toInstructor">Instructor</button>
   </div>
-</div>
+</div>`;
+  // ── Pre-fix view: spinner card blocks the form until first GPS fix lands.
+  // After 25s with no fix at all, geoStatus flips to 'timeout' and we show an
+  // error card with Retry and "Continue without location" buttons. If the
+  // student picks Continue (geoSkipped=true), the form unlocks and a final
+  // submit will record NO GPS in the spreadsheet.
+  const haveFix = !!st.geo;
+  const skipped = !!st.geoSkipped;
+  if (!haveFix && !skipped && (st.geoStatus==='idle' || st.geoStatus==='loading')) {
+    const elapsedSec = st.geoStartedAt ? Math.max(0, Math.floor((Date.now()-st.geoStartedAt)/1000)) : 0;
+    const pct = Math.min(100, Math.round(elapsedSec / 25 * 100));
+    return `${courseHeader}
+<div class="card locate-card">
+  <div class="spinner"></div>
+  <div style="font-size:16px;font-weight:600;margin-bottom:4px">Locating you…</div>
+  <p style="font-size:13px;color:var(--text2);margin-bottom:0">Indoor GPS takes 5–20 seconds. The check-in form will appear automatically once your phone reports your location.</p>
+  <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+  <p style="font-size:11px;color:var(--text3);margin-top:8px">If this is stuck, make sure your browser has Location permission for this site.</p>
+</div>`;
+  }
+  if (!haveFix && !skipped && (st.geoStatus==='error' || st.geoStatus==='unsupported' || st.geoStatus==='timeout')) {
+    const errMsg = st.geoStatus==='unsupported'
+      ? 'This browser doesn\'t support geolocation.'
+      : st.geoStatus==='timeout'
+        ? 'GPS is taking longer than expected. You can retry, or submit without location and ask your instructor to confirm you were in class.'
+        : (st.geoError||'Location permission denied') + '. Open browser settings and grant location, then tap Retry.';
+    return `${courseHeader}
+<div class="card locate-card">
+  <div style="width:38px;height:38px;border-radius:50%;background:var(--amber-bg);display:flex;align-items:center;justify-content:center;margin:0 auto 12px">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="${'#854F0B'}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="8" x2="12" y2="13"/><circle cx="12" cy="17" r=".7" fill="#854F0B"/><circle cx="12" cy="12" r="10"/></svg>
+  </div>
+  <div style="font-size:16px;font-weight:600;margin-bottom:4px">GPS unavailable</div>
+  <p style="font-size:13px;color:var(--text2);margin-bottom:14px">${errMsg}</p>
+  <button class="btn-o" id="geoBtn" style="margin-bottom:8px">Retry GPS</button>
+  <button class="btn-sm" id="skipGpsBtn">Continue without location</button>
+</div>`;
+  }
+  // ── Have-fix (or skipped) view: form is enabled. If we have a real fix,
+  // accuracy refines silently in background. If skipped, the location badge
+  // shows the "no GPS" amber state and submit will record NO GPS in the sheet.
+  const acc = st.geo && st.geo.accuracy != null ? Math.round(st.geo.accuracy) : null;
+  const locVerifyBlock = skipped && !haveFix
+    ? `<div class="card">
+        <div class="sec">Location verification</div>
+        <div class="geo-row">
+          <div class="geo-badge"><span class="dot" style="background:#BA7517"></span><span>GPS skipped — submission will be flagged</span></div>
+          <button class="btn-o" id="geoBtn">Try GPS again</button>
+        </div>
+        <p style="font-size:11px;color:var(--amber-text);margin-top:6px">Your instructor will see "NO GPS" next to your name and may ask you to verify in person.</p>
+      </div>`
+    : `<div class="card">
+        <div class="sec">Location verification</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Your GPS coordinates are captured once to confirm you are physically in class. They are not tracked after submission.</p>
+        <div class="geo-row">
+          <div class="geo-badge"><span class="dot" style="background:#3B6D11"></span><span>Location captured${acc!=null?` (±${acc}m)`:''}</span></div>
+          <button class="btn-o" id="geoBtn">Refresh</button>
+        </div>
+        ${acc!=null && acc > 80 ? `<p style="font-size:11px;color:var(--amber-text);margin-top:6px">Accuracy is coarse — if you have time, wait a few seconds for it to improve (it updates automatically).</p>` : ''}
+      </div>`;
+  return `${courseHeader}
 <div class="card">
   <div class="sec">Your information</div>
   <div class="field"><label>Full name</label><input type="text" id="sName" placeholder="First Last" autocomplete="name"/></div>
@@ -590,18 +713,9 @@ function studentHTML() {
     <input type="text" class="mono" id="sCode" placeholder="e.g. A7F2" maxlength="6"/>
   </div>
 </div>
-<div class="card">
-  <div class="sec">Location verification</div>
-  <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Your GPS coordinates are captured once to confirm you are physically in class. They are not tracked after submission.</p>
-  <div class="geo-row">
-    <div class="geo-badge"><span class="dot" style="background:${gDot}"></span><span>${gText}</span></div>
-    ${geoBtnLabel?`<button class="btn-o" id="geoBtn">${geoBtnLabel}</button>`:''}
-  </div>
-  ${st.geoStatus==='error'?`<p style="font-size:12px;color:var(--red-text);margin-top:6px">${st.geoError||'Permission denied'}. Tap Retry, then make sure your browser has location permission.</p>`:''}
-  ${st.geoStatus==='loading'?`<p style="font-size:12px;color:var(--text2);margin-top:6px">Indoor GPS can take 10–20 seconds. The Submit button unlocks once your location is captured.</p>`:''}
-</div>
+${locVerifyBlock}
 ${getSheetsUrl(id)?`<p style="font-size:12px;color:var(--text3);display:flex;align-items:center;gap:5px;margin-bottom:8px"><span class="dot" style="background:#3B6D11"></span>Responses logged to Google Sheets</p>`:''}
-<button class="btn-p" id="submitBtn" style="background:${course.color}${submitDisabled?';opacity:.55;cursor:not-allowed':''}" ${submitDisabled?'disabled':''}>${submitLabel}</button>`;
+<button class="btn-p" id="submitBtn" style="background:${course.color}">Submit attendance</button>`;
 }
 
 function instructorHTML() {
@@ -874,7 +988,18 @@ function attachE() {
   on('tabSheets','click',()=>{st.tab='sheets';render();});
   on('tabRecords','click',()=>{st.tab='records';render();});
   on('geoBtn','click',requestGeo);
-  on('anotherBtn','click',()=>{showSuccess=false;submitted=null;render();});
+  // "Continue without location": user accepted that GPS failed; reveal the
+  // form so they can still submit name+code. geoStatus stays as 'timeout'/'error',
+  // so the submission gets recorded as NO GPS in the spreadsheet.
+  on('skipGpsBtn','click',()=>{
+    stopGeoWatch();
+    // Force the haveFix branch by leaving st.geo null but giving the form a
+    // "fake fix" placeholder. The pre-fix view checks st.geo, so we set a
+    // sentinel here that's clearly non-locating.
+    st.geoSkipped = true;
+    render();
+  });
+  on('anotherBtn','click',()=>{showSuccess=false;submitted=null;st.geo=null;st.geoStatus='idle';st.geoSkipped=false;render();});
   on('submitBtn','click',()=>{
     const n=document.getElementById('sName')?.value.trim();
     const co=document.getElementById('sCode')?.value.trim();
@@ -977,6 +1102,13 @@ function attachE() {
   const np2=document.getElementById('newPass2');if(np2)np2.addEventListener('input',e=>st.newPass2=e.target.value);
   // Auto-trigger geolocation when a student lands on the check-in form.
   if(st.view==='student'&&!showSuccess&&st.geoStatus==='idle'){ setTimeout(requestGeo,120); }
+  // Animate the spinner-card progress bar by re-rendering once per second
+  // while we're waiting for the first GPS fix. Cheap; pauses as soon as we
+  // either have a fix or surface the timeout/error card.
+  if(st.view==='student'&&!showSuccess&&!st.geo&&!st.geoSkipped&&st.geoStatus==='loading'){
+    if(st.geoTickId) clearTimeout(st.geoTickId);
+    st.geoTickId = setTimeout(()=>{ if(!st.geo&&st.geoStatus==='loading') render(); }, 1000);
+  }
 }
 
 render();
