@@ -6,7 +6,7 @@
 <title>Attendance Check-In</title>
 <!--
   attendance-lieberman.html — Cal Poly SLO · Prof. Lieberman
-  Spring 2026 · ITP 428 / ITP 406 / BUS 310-313
+  Spring 2026 · ITP 4428 / ITP 406 / Bus 3313 / Bus 4488
 
   VERSION: 2026-05-13-watchposition-silent-refine
 
@@ -145,23 +145,29 @@ hr { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
 // ----------------------------------------------------------------------------
 const COURSE_CONFIG = {
   ITP428: {
-    sheetsUrl: 'https://script.google.com/macros/s/AKfycbx7AsbtgY7A_rhXFYSwQS43zyJJQI_zrmGXsGVoJkX_sFWf_r-Sr4Zgh06ZQEBTgCeLPQ/exec',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
+    sheetsUrl: 'https://script.google.com/a/macros/aplusstores.com/s/AKfycbwiREz3P0FmWvIkW9L-KnzhOSIrQFdnecJ3HCiirW9vBWE1Y1CxS6TXKxiUeSgIv-0X/exec',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
     classroomLat: 35.30003,         // e.g. 35.30050
     classroomLng: -120.66443,         // e.g. -120.66250
     classroomRadius: 50,
   },
    ITP406: {
-    sheetsUrl: 'https://script.google.com/macros/s/AKfycbyBXL7WsWpFAlWui7RpW6w-uwXlbk8oK3DFf4GeRXz0wC4cowMvSfwfLFXObt8Eo5Nu/exec',
+    sheetsUrl: 'https://script.google.com/macros/s/AKfycbyBzUcsGFt2V_SDpVCx1MFVXFYnSfsoC2BJEncE8fBX-ziB8N7MPxOQH88cYgydTqaR/exec',
     classroomLat: 35.30001,
     classroomLng: -120.66527,
     classroomRadius: 50,
   },
   
-  BUS310: {
-    sheetsUrl: 'https://script.google.com/macros/s/AKfycbxWHvp8c8-TNG-wmp_3PwnR43NblZXS33M_vPeF8LpUv-MsHWXnlocoIbw2SoJQ5o_pjQ/exec',
+  BUS313: {
+    sheetsUrl: 'https://script.google.com/macros/s/AKfycbzrKiFMaAlJyuhRieQzfQRPP6sAdos3J9HLVhase_049qreT7iyGUt2c7-qkHr_eQLGag/exec',
     classroomLat: 35.30003,
     classroomLng: -120.66443,
     classroomRadius: 50,
+  },
+  BUS4488: {
+    sheetsUrl: 'https://script.google.com/macros/s/AKfycbyQIve-E8bzsFLuuPXqMfhEYIqXSpC0-CmeVBqkGzsgw8irnf-lWv3pnILDjmwKycMT/exec',              // paste your /exec URL here after deploying Apps Script
+    classroomLat: null,         // e.g. 35.30050
+    classroomLng: null,         // e.g. -120.66250
+    classroomRadius: 100,
   },
 };
 // ============================================================================
@@ -248,9 +254,10 @@ function doGet(e) {
 }`;
 
 const COURSES = [
-  { id:'ITP428', label:'ITP 428',     color:'#185FA5', bg:'#E6F1FB', txt:'#0C447C' },
-  { id:'ITP406', label:'ITP 406',     color:'#0F6E56', bg:'#E1F5EE', txt:'#085041' },
-  { id:'BUS310', label:'Bus 310-313', color:'#154734', bg:'#E4F0E9', txt:'#0B2A1E' }  // Cal Poly green
+  { id:'ITP428',  label:'ITP 4428',  color:'#185FA5', bg:'#E6F1FB', txt:'#0C447C' },
+  { id:'ITP406',  label:'ITP 406',   color:'#0F6E56', bg:'#E1F5EE', txt:'#085041' },
+  { id:'BUS310',  label:'Bus 3313',  color:'#154734', bg:'#E4F0E9', txt:'#0B2A1E' },  // Cal Poly green
+  { id:'BUS4488', label:'Bus 4488',  color:'#6B3FA0', bg:'#F0EAFA', txt:'#42256B' },  // purple
 ];
 const getCourse = id => COURSES.find(c=>c.id===id) || COURSES[0];
 function urlCourse() {
