@@ -145,21 +145,28 @@ hr { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
 // ----------------------------------------------------------------------------
 const COURSE_CONFIG = {
   ITP428: {
-    sheetsUrl: '',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
+    sheetsUrl: 'https://script.google.com/macros/s/AKfycbwiREz3P0FmWvIkW9L-KnzhOSIrQFdnecJ3HCiirW9vBWE1Y1CxS6TXKxiUeSgIv-0X/exec',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
+    classroomLat: 35.30003,         // e.g. 35.30050
+    classroomLng: -120.66443,         // e.g. -120.66250
+    classroomRadius: 50,
+  },
+   ITP406: {
+    sheetsUrl: 'https://script.google.com/macros/s/AKfycbyBzUcsGFt2V_SDpVCx1MFVXFYnSfsoC2BJEncE8fBX-ziB8N7MPxOQH88cYgydTqaR/exec',
+    classroomLat: 35.30001,
+    classroomLng: -120.66527,
+    classroomRadius: 50,
+  },
+  
+  BUS310: {
+    sheetsUrl: 'https://script.google.com/macros/s/AKfycbzrKiFMaAlJyuhRieQzfQRPP6sAdos3J9HLVhase_049qreT7iyGUt2c7-qkHr_eQLGag/exec',
+    classroomLat: 35.30003,
+    classroomLng: -120.66443,
+    classroomRadius: 50,
+  },
+  BUS4488: {
+    sheetsUrl: 'https://script.google.com/macros/s/AKfycbyQIve-E8bzsFLuuPXqMfhEYIqXSpC0-CmeVBqkGzsgw8irnf-lWv3pnILDjmwKycMT/exec',              // paste your /exec URL here after deploying Apps Script
     classroomLat: null,         // e.g. 35.30050
     classroomLng: null,         // e.g. -120.66250
-    classroomRadius: 100,
-  },
-  ITP406: {
-    sheetsUrl: '',
-    classroomLat: null,
-    classroomLng: null,
-    classroomRadius: 100,
-  },
-  BUS310: {
-    sheetsUrl: '',
-    classroomLat: null,
-    classroomLng: null,
     classroomRadius: 100,
   },
 };
