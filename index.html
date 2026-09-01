@@ -6,7 +6,7 @@
 <title>Attendance Check-In</title>
 <!--
   attendance-lieberman.html — Cal Poly SLO · Prof. Lieberman
-  Spring 2026 · ITP 428 / ITP 406 / BUS 310-313
+  Spring 2026 · ITP 4428 / ITP 4406 / Bus 3313 / Bus 4488
 
   VERSION: 2026-05-13-watchposition-silent-refine
 
@@ -145,7 +145,7 @@ hr { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
 // ----------------------------------------------------------------------------
 const COURSE_CONFIG = {
   ITP428: {
-    sheetsUrl: 'https://script.google.com/macros/s/AKfycbwiREz3P0FmWvIkW9L-KnzhOSIrQFdnecJ3HCiirW9vBWE1Y1CxS6TXKxiUeSgIv-0X/exec',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
+    sheetsUrl: 'https://script.google.com/a/macros/aplusstores.com/s/AKfycbwiREz3P0FmWvIkW9L-KnzhOSIrQFdnecJ3HCiirW9vBWE1Y1CxS6TXKxiUeSgIv-0X/exec',              // e.g. 'https://script.google.com/macros/s/AKfyc.../exec'
     classroomLat: 35.30003,         // e.g. 35.30050
     classroomLng: -120.66443,         // e.g. -120.66250
     classroomRadius: 50,
@@ -254,9 +254,10 @@ function doGet(e) {
 }`;
 
 const COURSES = [
-  { id:'ITP428', label:'ITP 428',     color:'#185FA5', bg:'#E6F1FB', txt:'#0C447C' },
-  { id:'ITP406', label:'ITP 406',     color:'#0F6E56', bg:'#E1F5EE', txt:'#085041' },
-  { id:'BUS310', label:'Bus 310-313', color:'#154734', bg:'#E4F0E9', txt:'#0B2A1E' }  // Cal Poly green
+  { id:'ITP428',  label:'ITP 4428',  color:'#185FA5', bg:'#E6F1FB', txt:'#0C447C' },
+  { id:'ITP406',  label:'ITP 4406',   color:'#0F6E56', bg:'#E1F5EE', txt:'#085041' },
+  { id:'BUS310',  label:'Bus 3313',  color:'#154734', bg:'#E4F0E9', txt:'#0B2A1E' },  // Cal Poly green
+  { id:'BUS4488', label:'Bus 4488',  color:'#6B3FA0', bg:'#F0EAFA', txt:'#42256B' },  // purple
 ];
 const getCourse = id => COURSES.find(c=>c.id===id) || COURSES[0];
 function urlCourse() {
@@ -634,10 +635,7 @@ function loginHTML() {
     </div>
     <button class="btn-p" id="loginBtn">Sign in</button>
   </div>
-  <div style="text-align:center;display:flex;flex-direction:column;gap:6px;margin-top:4px">
-    <button class="btn-sm" id="forgotPassBtn" style="border:none;color:var(--blue-text)">Forgot password? Reset to default</button>
-    <button class="btn-sm" id="backFromLogin" style="border:none;color:var(--text3)">Cancel</button>
-  </div>
+  <div style="text-align:center"><button class="btn-sm" id="backFromLogin" style="border:none;color:var(--text3)">Cancel</button></div>
 </div>`;
 }
 
@@ -982,15 +980,6 @@ function attachE() {
   const iid=st.instructorCourse; const c=cd(iid);
   on('toInstructor','click',()=>{st.view='instructor';st.loginError=false;render();});
   on('backFromLogin','click',()=>{st.view=fixedCourse?'student':'pick';render();});
-  on('forgotPassBtn','click',()=>{
-    // One-tap password reset: clears attend_pass from localStorage on this
-    // device so the login screen reverts to the default password (changeme).
-    // Safe because the instructor login is a per-device convenience, not a
-    // security boundary — the whole form is served from a public URL.
-    if(!window.confirm('Reset the instructor password on THIS device back to "changeme"? You can set a new one after signing in.')) return;
-    try { localStorage.removeItem(PASS_KEY); } catch(_) {}
-    st.loginError=false; st.newPass1=''; st.newPass2=''; st.passMsg=''; render();
-  });
   on('toStudent','click',()=>{st.view=fixedCourse?'student':'pick';render();});
   on('logoutBtn','click',()=>{st.instructorAuthed=false;st.view=fixedCourse?'student':'pick';render();});
   on('loginBtn','click',()=>{
